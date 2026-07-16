@@ -62,6 +62,13 @@ export default defineContentScript({
         from { opacity: 0; }
         to { opacity: 1; }
       }
+      [data-langeasy-highlight] {
+        cursor: pointer;
+      }
+      [data-langeasy-highlight]:hover {
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
     `;
     document.head.appendChild(style);
 
@@ -80,6 +87,9 @@ export default defineContentScript({
     let lastStartOffset = 0;
     let lastSelectedText: string | null = null;
     let pendingLookup: LookupMessage | null = null;
+    let hoverOpenTimer: ReturnType<typeof setTimeout> | undefined;
+    let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastHoverLemma: string | null = null;
 
     // === 3. Settings Cache (defaults match storage fallbacks) ===
     let isGetWord = true;
@@ -184,10 +194,7 @@ export default defineContentScript({
 
     function showPopup(word: string, data: WordLookupResponse | null, pX: number, pY: number) {
       cleanWrappers();
-      const selection = window.getSelection();
-      if (selection && selection.type) {
-        createIframe(word, data, pX, pY);
-      }
+      createIframe(word, data, pX, pY);
     }
 
     function handleResponse(word: string, response: WordLookupResponse, pX: number, pY: number) {
@@ -254,6 +261,74 @@ export default defineContentScript({
     }
 
     // === 5. Event Listeners (注册在前，确保立即可用) ===
+
+    // 高亮词悬浮 → 翻译弹窗（短延迟，避免扫过时误触）
+    ctx.addEventListener(document, 'mouseover', (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (!target || typeof target.closest !== 'function') return;
+
+      if (target.closest('#yddWrapper')) {
+        if (hoverCloseTimer !== undefined) {
+          clearTimeout(hoverCloseTimer);
+          hoverCloseTimer = undefined;
+        }
+        return;
+      }
+
+      const hl = target.closest('[data-langeasy-highlight]') as HTMLElement | null;
+      if (!hl) return;
+
+      if (hoverCloseTimer !== undefined) {
+        clearTimeout(hoverCloseTimer);
+        hoverCloseTimer = undefined;
+      }
+
+      const lemma = (hl.dataset.langeasyLemma || hl.textContent || '').trim();
+      if (!lemma) return;
+      if (lemma === lastHoverLemma && currentWrapper) return;
+
+      if (hoverOpenTimer !== undefined) clearTimeout(hoverOpenTimer);
+      hoverOpenTimer = ctx.setTimeout(() => {
+        hoverOpenTimer = undefined;
+        lastHoverLemma = lemma;
+        const rect = hl.getBoundingClientRect();
+        const x = window.scrollX + rect.left;
+        const y = window.scrollY + rect.bottom + 4;
+        queryWord(lemma, x, y);
+      }, 280);
+    }, { capture: true });
+
+    ctx.addEventListener(document, 'mouseout', (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      const related = e.relatedTarget as Element | null;
+      if (!target || typeof target.closest !== 'function') return;
+
+      const leavingHl = target.closest('[data-langeasy-highlight]');
+      const leavingPopup = target.closest('#yddWrapper');
+      if (!leavingHl && !leavingPopup) return;
+
+      const enteringHl = related && typeof related.closest === 'function'
+        ? related.closest('[data-langeasy-highlight]')
+        : null;
+      const enteringPopup = related && typeof related.closest === 'function'
+        ? related.closest('#yddWrapper')
+        : null;
+      if (enteringHl || enteringPopup) return;
+
+      if (hoverOpenTimer !== undefined) {
+        clearTimeout(hoverOpenTimer);
+        hoverOpenTimer = undefined;
+      }
+
+      if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = ctx.setTimeout(() => {
+        hoverCloseTimer = undefined;
+        if (!mouseOverPopup) {
+          lastHoverLemma = null;
+          cleanWrappers();
+        }
+      }, 220);
+    }, { capture: true });
 
     // mousemove (capture=true) - Ctrl+hover word lookup
     ctx.addEventListener(document, 'mousemove', async (e: MouseEvent) => {
@@ -448,6 +523,8 @@ export default defineContentScript({
       unwatchTheme();
       mediaQuery.removeEventListener('change', onSystemThemeChange);
       document.documentElement.style.removeProperty('--langeasy-mini-border');
+      if (hoverOpenTimer !== undefined) clearTimeout(hoverOpenTimer);
+      if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
       if (cleanupHighlight) cleanupHighlight();
     });
   },

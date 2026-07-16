@@ -6,6 +6,7 @@ import {
   wordColorIndex,
   type HighlightSettings,
 } from './storage';
+import { WORD_RE, findHighlightRanges } from './word-match';
 
 // === 内部状态 ===
 let observer: MutationObserver | null = null;
@@ -21,8 +22,8 @@ const SKIP_TAGS = new Set([
   'NOSCRIPT', 'CODE', 'PRE', 'OBJECT', 'EMBED',
 ]);
 
-// === 样式生成（按单词稳定配色） ===
-function buildStyle(s: HighlightSettings, word: string): string {
+// === 样式生成（按命中原形稳定配色） ===
+function buildStyle(s: HighlightSettings, lemma: string): string {
   const base = 'font: inherit; letter-spacing: inherit; word-spacing: inherit; vertical-align: baseline;';
   if (s.mode === 'solid') {
     return `${base}color: ${s.color};`;
@@ -33,11 +34,19 @@ function buildStyle(s: HighlightSettings, word: string): string {
       : ([s.gradientFrom, s.gradientTo].filter(Boolean) as string[]);
     return base + (cssFromStops(stops) || '');
   }
-  // group：按单词哈希固定到某一组（组内可为纯色或渐变）
   const groups = s.colorGroups;
   if (!groups || groups.length === 0) return base;
-  const stops = groups[wordColorIndex(word, groups.length)] ?? groups[0];
+  const stops = groups[wordColorIndex(lemma, groups.length)] ?? groups[0];
   return base + (cssFromStops(stops) || '');
+}
+
+function pushHighlightSpan(frags: Node[], text: string, lemma: string): void {
+  const span = document.createElement('span');
+  span.dataset.langeasyHighlight = '1';
+  span.dataset.langeasyLemma = lemma;
+  span.style.cssText = buildStyle(settings!, lemma) + 'cursor: pointer;';
+  span.textContent = text;
+  frags.push(span);
 }
 
 // === DOM 扫描与高亮 ===
@@ -46,52 +55,62 @@ function highlightNode(root: Node): void {
 
   isHighlighting = true;
   try {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (!parent || !node.textContent?.trim()) return NodeFilter.FILTER_REJECT;
-      if (SKIP_TAGS.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
-      if (parent.dataset.langeasyHighlight) return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || !node.textContent?.trim()) return NodeFilter.FILTER_REJECT;
+        if (SKIP_TAGS.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+        if (parent.dataset.langeasyHighlight) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
 
-  const nodes: Text[] = [];
-  let n: Node | null;
-  while ((n = walker.nextNode())) nodes.push(n as Text);
+    const nodes: Text[] = [];
+    let n: Node | null;
+    while ((n = walker.nextNode())) nodes.push(n as Text);
 
-  const regex = /([a-zA-Z']+)/g;
+    for (const tn of nodes) {
+      const text = tn.textContent!;
+      WORD_RE.lastIndex = 0;
+      let last = 0;
+      let m: RegExpExecArray | null;
+      const frags: Node[] = [];
+      let changed = false;
 
-  for (const tn of nodes) {
-    const text = tn.textContent!;
-    regex.lastIndex = 0;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    const frags: Node[] = [];
-    let changed = false;
+      while ((m = WORD_RE.exec(text)) !== null) {
+        const surface = m[0];
+        const ranges = findHighlightRanges(surface, wordSet);
+        if (ranges.length === 0) continue;
 
-    while ((m = regex.exec(text)) !== null) {
-      if (wordSet.has(m[0].toLowerCase())) {
-        if (m.index > last) frags.push(document.createTextNode(text.slice(last, m.index)));
-        const span = document.createElement('span');
-        span.dataset.langeasyHighlight = '1';
-        span.style.cssText = buildStyle(settings, m[0]);
-        span.textContent = m[0];
-        frags.push(span);
-        last = m.index + m[0].length;
+        if (m.index > last) {
+          frags.push(document.createTextNode(text.slice(last, m.index)));
+        }
+
+        let localLast = 0;
+        for (const r of ranges) {
+          if (r.start > localLast) {
+            frags.push(document.createTextNode(surface.slice(localLast, r.start)));
+          }
+          pushHighlightSpan(frags, surface.slice(r.start, r.end), r.lemma);
+          localLast = r.end;
+        }
+        if (localLast < surface.length) {
+          frags.push(document.createTextNode(surface.slice(localLast)));
+        }
+
+        last = m.index + surface.length;
         changed = true;
       }
-    }
 
-    if (changed) {
-      if (last < text.length) frags.push(document.createTextNode(text.slice(last)));
-      const p = tn.parentNode;
-      if (p) {
-        for (const f of frags) p.insertBefore(f, tn);
-        p.removeChild(tn);
+      if (changed) {
+        if (last < text.length) frags.push(document.createTextNode(text.slice(last)));
+        const p = tn.parentNode;
+        if (p) {
+          for (const f of frags) p.insertBefore(f, tn);
+          p.removeChild(tn);
+        }
       }
     }
-  }
   } finally {
     isHighlighting = false;
   }
@@ -101,7 +120,7 @@ function highlightNode(root: Node): void {
 function clearAll(): void {
   isHighlighting = true;
   try {
-    document.querySelectorAll('[data-langeasy-highlight]').forEach(el => {
+    document.querySelectorAll('[data-langeasy-highlight]').forEach((el) => {
       const p = el.parentNode;
       if (p) {
         p.replaceChild(document.createTextNode(el.textContent || ''), el);
@@ -125,7 +144,7 @@ function applyHighlight(): void {
 function setupObserver(): void {
   if (observer) observer.disconnect();
   observer = new MutationObserver((mutations) => {
-    if (isHighlighting) return; // 跳过高亮自身引起的 DOM 变更
+    if (isHighlighting) return;
     let hasNew = false;
     for (const mut of mutations) {
       for (const node of mut.addedNodes) {
@@ -139,7 +158,6 @@ function setupObserver(): void {
       }
     }
     if (!hasNew && mutations.length > 5) {
-      // 大量变更时重新扫描（可能是 SPA 路由切换）
       applyHighlight();
     }
   });
@@ -152,7 +170,7 @@ export async function initHighlight(): Promise<() => void> {
     wordbookWordsItem.getValue(),
     highlightSettingsItem.getValue(),
   ]);
-  wordSet = new Set(words.map(w => w.toLowerCase()));
+  wordSet = new Set(words.map((w) => w.toLowerCase()));
   settings = normalizeHighlightSettings(raw);
 
   if (settings.enabled && wordSet.size > 0) {
@@ -160,9 +178,8 @@ export async function initHighlight(): Promise<() => void> {
     setupObserver();
   }
 
-  // 监听生词本变化（跨页面同步，防抖避免增量同步频繁刷新）
   const unwatchWords = wordbookWordsItem.watch((w) => {
-    wordSet = new Set(w.map(word => word.toLowerCase()));
+    wordSet = new Set(w.map((word) => word.toLowerCase()));
     clearTimeout(updateTimer);
     updateTimer = setTimeout(() => {
       clearAll();
@@ -175,8 +192,7 @@ export async function initHighlight(): Promise<() => void> {
       }
     }, 500);
   });
-  
-  // 监听高亮设置变化（关闭/开启/颜色切换）
+
   const unwatchSettings = highlightSettingsItem.watch((newSettings) => {
     settings = normalizeHighlightSettings(newSettings);
     clearTimeout(updateTimer);
@@ -192,13 +208,15 @@ export async function initHighlight(): Promise<() => void> {
     }, 500);
   });
 
-  // 返回清理函数
   return () => {
     unwatchWords();
     unwatchSettings();
     clearTimeout(updateTimer);
     clearTimeout(debounceTimer);
-    if (observer) { observer.disconnect(); observer = null; }
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+    }
     clearAll();
   };
 }

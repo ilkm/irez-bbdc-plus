@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { WordDefinition } from '@/components/word-definition';
@@ -92,6 +93,14 @@ export default function App() {
     }
   };
 
+  const handleClear = () => {
+    setInputValue('');
+    setWordData(null);
+    setEscapedInterpret('');
+    setTips('提示：使用回车键搜索更快捷。');
+    inputRef.current?.focus();
+  };
+
   // 读取网页选中的单词，自动查询
   React.useEffect(() => {
     (async () => {
@@ -148,15 +157,28 @@ export default function App() {
       {/* 搜索区 */}
       <div className="p-3">
         <div className="flex items-center gap-2">
-          <Input
-            ref={inputRef}
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className="flex-1"
-            autoFocus
-            placeholder="输入单词查询..."
-          />
+          <div className="relative flex-1 min-w-0">
+            <Input
+              ref={inputRef}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              className={inputValue ? 'pr-7 w-full' : 'w-full'}
+              autoFocus
+              placeholder="输入单词查询..."
+            />
+            {inputValue !== '' && (
+              <button
+                type="button"
+                onClick={handleClear}
+                title="清空"
+                aria-label="清空"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-secondary hover:text-primary transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           <Button onClick={() => handleSearch()}>查询</Button>
         </div>
         {wordData && wordEntry && (
@@ -191,7 +213,7 @@ export default function App() {
           设置
         </a>
         <span className="text-secondary/40">|</span>
-        <a href="https://bbdc.cn" target="_blank" className="text-secondary hover:text-accent transition-colors">
+        <a href="https://github.com/ilkm/irez-bbdc-plus" target="_blank" className="text-secondary hover:text-accent transition-colors">
           关于
         </a>
       </div>
