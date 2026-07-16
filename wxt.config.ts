@@ -17,7 +17,6 @@ export default defineConfig({
       'https://bbdc.cn/*',
       'https://audio2.beingfine.cn/*',
     ],
-    key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz2ctgNKrZNXkck6E4NGjKejv/HWMiEOxOovAoV+LjI09qAEhksxre7vzhiAl+TrDDqERpw2ArDrTy39JVuvmk8XUaap/GrmwtL+wmGD/7ns6kDv5mM1pdHlhZ+aC5R7e5NXZIdYjY0wGrksUWx4rzTTKRMlE3B8wN8hzUCAM+16yRfpz8b/p5FowEP5WULYURF0a26lrOQWfWO7NTDv8ZEAyQEJmsaps0Y/5Qj50O/9tugT4rJ+7+KZ3skRLAm1QpWFIlyWjL3IscrM0O1+RMCwmFC+eJ8qz5SVn7I4N8vTG3xRxYnZmzZNjyfyUaMA17ukf3mq1kaVWGcxLAEruDwIDAQAB',
     icons: {
       19: 'images/icon_19.png',
       48: 'images/icon_48.png',
