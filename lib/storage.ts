@@ -86,12 +86,13 @@ export function wordColorIndex(word: string, groupCount: number): number {
   return Math.abs(h) % groupCount;
 }
 
-/** 由色标生成 CSS 文本样式片段（不含 base） */
+/** 由色标生成 CSS 文本样式片段（不含 base；多色用 clip，不铺背景色块） */
 export function cssFromStops(stops: string[]): string {
   if (!stops.length) return '';
   if (stops.length === 1) return `color: ${stops[0]};`;
   return (
-    `background: linear-gradient(135deg, ${stops.join(', ')});` +
+    `background-color: transparent;` +
+    `background-image: linear-gradient(135deg, ${stops.join(', ')});` +
     `-webkit-background-clip: text; background-clip: text;` +
     `-webkit-text-fill-color: transparent;`
   );

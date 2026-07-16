@@ -21,6 +21,20 @@ const AUTH_FAIL_COOLDOWN = 5_000;
 /** bbdc.cn API 成功码：check-login / add 返回 200，部分 list 返回 20000 */
 const SUCCESS_CODES = new Set([200, 20000]);
 
+/** 通知各 tab content script 重扫高亮 */
+async function notifyWordbookUpdated(): Promise<void> {
+  try {
+    const tabs = await browser.tabs.query({});
+    for (const tab of tabs) {
+      if (tab.id != null) {
+        browser.tabs.sendMessage(tab.id, { type: 'wordbook-local-updated' }).catch(() => {});
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
 /** 从响应中解析词列表与云端总数（兼容 wordList/pageInfo 与 list/total） */
 function parseWordbookPage(resp: WordbookListResponse): {
   list: WordbookListItem[];
@@ -108,6 +122,7 @@ export async function syncWordbook(force = true): Promise<number> {
 
     // 以云端为准：替换本地缓存
     await wordbookWordsItem.setValue(words);
+    await notifyWordbookUpdated();
     try {
       await db.words.clear();
       if (entries.length > 0) {
@@ -139,7 +154,9 @@ export async function addWordToLocal(word: string, info: string): Promise<void> 
   const words = await wordbookWordsItem.getValue();
   const lower = word.toLowerCase();
   if (!words.some((w) => w.toLowerCase() === lower)) {
-    await wordbookWordsItem.setValue([...words, word]);
+    const next = [...words, word];
+    await wordbookWordsItem.setValue(next);
+    await notifyWordbookUpdated();
   }
   try {
     await db.words.put({ word, info });
@@ -154,6 +171,7 @@ export async function removeWordFromLocal(word: string): Promise<void> {
   const lower = word.toLowerCase();
   const next = words.filter((w) => w.toLowerCase() !== lower);
   await wordbookWordsItem.setValue(next);
+  await notifyWordbookUpdated();
   try {
     await db.words.delete(word);
     // 兼容大小写不一致的主键

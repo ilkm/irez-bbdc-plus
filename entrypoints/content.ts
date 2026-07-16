@@ -29,21 +29,29 @@ export default defineContentScript({
   // Bunny Stream 等字幕在跨域 iframe（如 iframe.mediadelivery.net）内
   allFrames: true,
   async main(ctx) {
-    // 子 frame：只做生词高亮（不注入划词弹窗等顶层 UI）
-    if (window !== window.top) {
-      let cleanupHighlight: (() => void) | null = null;
-      try {
-        cleanupHighlight = await initHighlight();
-      } catch (e) {
-        console.log('[bbdc] initHighlight (frame) error:', e);
-      }
-      ctx.onInvalidated(() => cleanupHighlight?.());
-      return;
-    }
+    const isTopFrame = window === window.top;
 
     // === 1. CSS Injection ===
+    const isVideoFrame =
+      location.hostname === 'videos.sproutvideo.com' ||
+      location.hostname.endsWith('.sproutvideo.com') ||
+      location.hostname === 'iframe.mediadelivery.net' ||
+      location.hostname.endsWith('.mediadelivery.net');
+
     const style = document.createElement('style');
-    style.textContent = `
+    style.textContent = isVideoFrame
+      ? `
+      /* 字幕：自定义标签只着色，不触碰播放器 span 布局 */
+      bbdc-hl[data-langeasy-highlight],
+      [data-langeasy-highlight] {
+        cursor: pointer;
+        pointer-events: auto !important;
+      }
+      #yddWrapper {
+        display: none !important; /* 视频帧内禁止本地弹窗，一律走顶层 */
+      }
+    `
+      : `
       .langeasy-mini-icon {
         position: absolute;
         z-index: 999999;
@@ -78,10 +86,17 @@ export default defineContentScript({
       }
       [data-langeasy-highlight] {
         cursor: pointer;
+        background: none !important;
+        background-color: transparent !important;
+        pointer-events: auto !important;
       }
       [data-langeasy-highlight]:hover {
         text-decoration: underline;
         text-underline-offset: 2px;
+      }
+      #yddWrapper {
+        z-index: 2147483647 !important;
+        position: fixed !important;
       }
     `;
     document.head.appendChild(style);
@@ -104,6 +119,10 @@ export default defineContentScript({
     let hoverOpenTimer: number | undefined;
     let hoverCloseTimer: number | undefined;
     let lastHoverLemma: string | null = null;
+    /** 从视频 iframe 打开的弹窗：鼠标无法从 iframe 移入顶层弹窗，禁止 mouseout 自动关闭 */
+    let popupFromVideoFrame = false;
+    /** queryWord 异步完成前暂存，避免 showPopup→cleanWrappers 清掉标志 */
+    let pendingPopupFromVideoFrame = false;
 
     // === 3. Settings Cache (defaults match storage fallbacks) ===
     let isGetWord = true;
@@ -125,9 +144,11 @@ export default defineContentScript({
     function cleanWrappers(): boolean {
       mouseOverPopup = false;
       pendingLookup = null;
+      popupFromVideoFrame = false;
       if (currentWrapper) {
         while (wrapperArray.length) {
-          document.body.removeChild(wrapperArray.pop()!);
+          const w = wrapperArray.pop()!;
+          w.parentNode?.removeChild(w);
         }
         currentWrapper = null;
         return true;
@@ -163,10 +184,12 @@ export default defineContentScript({
         'vertical-align: top',
       ].join(';');
       wrapper.id = 'yddWrapper';
-      wrapper.style.position = 'absolute';
-      wrapper.style.zIndex = '99999';
+      // 始终 fixed + 最大 z-index，保证在页面（含视频控件）最上层
+      wrapper.style.position = 'fixed';
+      wrapper.style.zIndex = '2147483647';
       wrapper.style.overflow = 'visible';
 
+      // pX/pY 为 viewport（client）坐标
       left = pX + 300 < innerW ? pX : pX - 300 - 20;
       wrapper.style.left = left + 'px';
       if (left + 300 > innerW) {
@@ -185,7 +208,8 @@ export default defineContentScript({
 
       document.body.style.position = 'static';
       wrapper.appendChild(iframe);
-      document.body.appendChild(wrapper);
+      // 挂到 html 上，避免被页面 stacking context 压住
+      (document.documentElement || document.body).appendChild(wrapper);
 
       wrapperArray.push(wrapper);
 
@@ -207,8 +231,13 @@ export default defineContentScript({
     }
 
     function showPopup(word: string, data: WordLookupResponse | null, pX: number, pY: number) {
+      const fromVideo = pendingPopupFromVideoFrame;
+      pendingPopupFromVideoFrame = false;
       cleanWrappers();
       createIframe(word, data, pX, pY);
+      if (fromVideo) {
+        popupFromVideoFrame = true;
+      }
     }
 
     function handleResponse(word: string, response: WordLookupResponse, pX: number, pY: number) {
@@ -306,9 +335,43 @@ export default defineContentScript({
         hoverOpenTimer = undefined;
         lastHoverLemma = lemma;
         const rect = hl.getBoundingClientRect();
-        const x = window.scrollX + rect.left;
-        const y = window.scrollY + rect.bottom + 4;
-        queryWord(lemma, x, y);
+        // 视频跨域 iframe：经 background 转到顶层打开弹窗（postMessage 不可靠）
+        if (isVideoFrame && !isTopFrame) {
+          browser.runtime
+            .sendMessage({
+              type: 'langeasy-frame-lookup',
+              word: lemma,
+              frameUrl: location.href,
+              rect: {
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+              },
+            })
+            .catch((err) => {
+              console.log('[bbdc] frame lookup relay failed:', err);
+              try {
+                window.top?.postMessage(
+                  {
+                    type: 'langeasy-lookup-from-frame',
+                    word: lemma,
+                    rect: {
+                      left: rect.left,
+                      top: rect.top,
+                      right: rect.right,
+                      bottom: rect.bottom,
+                    },
+                  },
+                  '*',
+                );
+              } catch {
+                /* ignore */
+              }
+            });
+          return;
+        }
+        queryWord(lemma, rect.left, rect.bottom + 4);
       }, 280);
     }, { capture: true });
 
@@ -334,6 +397,11 @@ export default defineContentScript({
         hoverOpenTimer = undefined;
       }
 
+      if (isVideoFrame && !isTopFrame) {
+        // 不转发 close：顶层弹窗无法从 iframe 移入，自动关闭会导致弹窗闪退
+        return;
+      }
+
       if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
       hoverCloseTimer = ctx.setTimeout(() => {
         hoverCloseTimer = undefined;
@@ -344,138 +412,250 @@ export default defineContentScript({
       }, 220);
     }, { capture: true });
 
-    // mousemove (capture=true) - Ctrl+hover word lookup
-    ctx.addEventListener(document, 'mousemove', async (e: MouseEvent) => {
-      if (getOption('ctrl_only') && e.ctrlKey) {
-        const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-        if (range) {
-          const startOffset = range.startOffset;
-          let endOffset = range.endOffset;
+    // mousemove / mouseup 划词仅顶层；iframe（字幕）用高亮悬浮查词即可
+    if (isTopFrame) {
+      // mousemove (capture=true) - Ctrl+hover word lookup
+      ctx.addEventListener(document, 'mousemove', async (e: MouseEvent) => {
+        if (getOption('ctrl_only') && e.ctrlKey) {
+          const range = document.caretRangeFromPoint(e.clientX, e.clientY);
+          if (range) {
+            const startOffset = range.startOffset;
+            let endOffset = range.endOffset;
 
-          if (lastStartContainer !== range.startContainer || lastStartOffset !== startOffset) {
-            lastStartContainer = range.startContainer;
-            lastStartOffset = startOffset;
-            const expandedRange = range.cloneRange();
-            let text = '';
+            if (lastStartContainer !== range.startContainer || lastStartOffset !== startOffset) {
+              lastStartContainer = range.startContainer;
+              lastStartOffset = startOffset;
+              const expandedRange = range.cloneRange();
+              let text = '';
 
-            const startData = (range.startContainer as CharacterData).data;
-            if (startData) {
-              let so = startOffset;
-              while (so >= 1) {
-                expandedRange.setStart(range.startContainer, --so);
-                text = expandedRange.toString();
-                if (!isEnglishChar(text.charAt(0))) {
-                  expandedRange.setStart(range.startContainer, so + 1);
-                  break;
-                }
-              }
-            }
-
-            const endData = (range.endContainer as CharacterData).data;
-            if (endData) {
-              while (endOffset < (range.endContainer as CharacterData).data.length) {
-                expandedRange.setEnd(range.endContainer, ++endOffset);
-                text = expandedRange.toString();
-                if (!isEnglishChar(text.charAt(text.length - 1))) {
-                  expandedRange.setEnd(range.endContainer, endOffset - 1);
-                  break;
-                }
-              }
-            }
-
-            const selectedText = expandedRange.toString();
-            if (lastSelectedText !== selectedText) {
-              lastSelectedText = selectedText;
-              if (selectedText.length >= 1) {
-                ctx.setTimeout(() => {
-                  const sel = window.getSelection();
-                  if (sel) {
-                    sel.removeAllRanges();
-                    sel.addRange(expandedRange);
-                    pageX = e.pageX;
-                    pageY = e.pageY;
-                    screenX = e.screenX;
-                    screenY = e.screenY;
-                    queryWord(selectedText, e.pageX, e.pageY);
+              const startData = (range.startContainer as CharacterData).data;
+              if (startData) {
+                let so = startOffset;
+                while (so >= 1) {
+                  expandedRange.setStart(range.startContainer, --so);
+                  text = expandedRange.toString();
+                  if (!isEnglishChar(text.charAt(0))) {
+                    expandedRange.setStart(range.startContainer, so + 1);
+                    break;
                   }
-                }, 100);
+                }
+              }
+
+              const endData = (range.endContainer as CharacterData).data;
+              if (endData) {
+                while (endOffset < (range.endContainer as CharacterData).data.length) {
+                  expandedRange.setEnd(range.endContainer, ++endOffset);
+                  text = expandedRange.toString();
+                  if (!isEnglishChar(text.charAt(text.length - 1))) {
+                    expandedRange.setEnd(range.endContainer, endOffset - 1);
+                    break;
+                  }
+                }
+              }
+
+              const selectedText = expandedRange.toString();
+              if (lastSelectedText !== selectedText) {
+                lastSelectedText = selectedText;
+                if (selectedText.length >= 1) {
+                  ctx.setTimeout(() => {
+                    const sel = window.getSelection();
+                    if (sel) {
+                      sel.removeAllRanges();
+                      sel.addRange(expandedRange);
+                      pageX = e.pageX;
+                      pageY = e.pageY;
+                      screenX = e.screenX;
+                      screenY = e.screenY;
+                      queryWord(selectedText, e.clientX, e.clientY);
+                    }
+                  }, 100);
+                }
               }
             }
           }
         }
-      }
-    }, { capture: true });
+      }, { capture: true });
 
-    // click - close popup (mini icon 改由 mousedown 关闭，避免划词后的 click 立刻清掉图标)
-    ctx.addEventListener(document, 'click', () => {
+      // mousedown - dismiss mini icon on next interaction (not the selection's trailing click)
+      ctx.addEventListener(document, 'mousedown', (e: MouseEvent) => {
+        const target = e.target as Element;
+        if (target && target.id !== 'langeasyMiniIcon' && !target.closest('#langeasyMiniIcon')) {
+          removeMiniIcon();
+        }
+      });
+
+      // mouseup - selection translation (core)
+      ctx.addEventListener(document, 'mouseup', async (e: MouseEvent) => {
+        if (mouseOverPopup) return;
+
+        if (currentWrapper) {
+          if (Math.round(Date.now()) - last_time < 500) return;
+          while (wrapperArray.length) {
+            const w = wrapperArray.pop()!;
+            w.parentNode?.removeChild(w);
+          }
+          currentWrapper = null;
+        }
+
+        if (getOption('dict_disable')) return;
+        if (!(getOption('ctrl_only') || !e.ctrlKey)) return;
+
+        let text = String(window.getSelection()).trim();
+        if (!text) return;
+
+        if (getOption('english_only') && hasTooManyKorean(text)) return;
+        if (getOption('english_only') && [...text].filter(c => isKoreanCharCode(c.charCodeAt(0))).length > 0) return;
+        if (getOption('english_only') && hasTooManyChinese(text)) return;
+        if (text.length > 2000) return;
+
+        const spaces = countSpaces(text);
+        if ((!hasTooManyChinese(text) && spaces >= 3) ||
+            (hasTooManyChinese(text) && text.length > 4) ||
+            (hasTooManyKorean(text) && text.length > 4)) {
+          pageX = e.pageX; pageY = e.pageY; screenX = e.screenX; screenY = e.screenY;
+          return;
+        }
+
+        if (getOption('english_only')) {
+          text = extractEnglish(text);
+        }
+
+        if (text) {
+          cleanWrappers();
+          // 存入选中单词，供 popup 自动查询
+          lastSelectedWordItem.setValue(text);
+          pageX = e.pageX; pageY = e.pageY; screenX = e.screenX; screenY = e.screenY;
+
+          if (getOption('mini_mode')) {
+            createMiniIcon(text, e.pageX, e.pageY);
+          } else {
+            queryWord(text, e.clientX, e.clientY);
+          }
+        }
+      });
+    }
+
+    // click - close popup（视频帧弹窗也靠点击关闭）
+    ctx.addEventListener(document, 'click', (e: MouseEvent) => {
       const wrapper = document.getElementById('yddWrapper');
-      if (wrapper) {
-        if (Math.round(Date.now()) - last_time > 200) {
-          wrapper.style.display = 'none';
-        }
+      if (!wrapper) return;
+      const t = e.target as Element | null;
+      if (t && typeof t.closest === 'function' && t.closest('#yddWrapper')) return;
+      if (Math.round(Date.now()) - last_time > 200) {
+        lastHoverLemma = null;
+        cleanWrappers();
       }
     });
 
-    // mousedown - dismiss mini icon on next interaction (not the selection's trailing click)
-    ctx.addEventListener(document, 'mousedown', (e: MouseEvent) => {
-      const target = e.target as Element;
-      if (target && target.id !== 'langeasyMiniIcon' && !target.closest('#langeasyMiniIcon')) {
-        removeMiniIcon();
-      }
-    });
-
-    // mouseup - selection translation (core)
-    ctx.addEventListener(document, 'mouseup', async (e: MouseEvent) => {
-      if (mouseOverPopup) return;
-
-      if (currentWrapper) {
-        if (Math.round(Date.now()) - last_time < 500) return;
-        while (wrapperArray.length) {
-          document.body.removeChild(wrapperArray.pop()!);
+    /** 顶层：按 frameUrl / 视频域名定位嵌入 iframe，把帧内坐标映射到页面 viewport */
+    function findVideoFrameEl(frameUrl?: string): HTMLIFrameElement | null {
+      const iframes = Array.from(document.querySelectorAll('iframe'));
+      if (frameUrl) {
+        const bySrc = iframes.find((f) => {
+          const src = f.src || '';
+          return src === frameUrl || (src.length > 0 && frameUrl.includes(src)) || src.includes(frameUrl);
+        });
+        if (bySrc) return bySrc;
+        try {
+          const u = new URL(frameUrl);
+          const byHost = iframes.find((f) => (f.src || '').includes(u.hostname));
+          if (byHost) return byHost;
+        } catch {
+          /* ignore */
         }
-        currentWrapper = null;
       }
+      return (
+        document.querySelector<HTMLIFrameElement>(
+          'iframe[src*="sproutvideo.com"], iframe[src*="mediadelivery.net"]',
+        ) ?? null
+      );
+    }
 
-      if (getOption('dict_disable')) return;
-      if (!(getOption('ctrl_only') || !e.ctrlKey)) return;
+    function openLookupFromVideoFrame(
+      word: string,
+      rect: { left: number; top: number; right: number; bottom: number },
+      frameUrl?: string,
+      source?: MessageEventSource | null,
+    ) {
+      let frameEl: HTMLIFrameElement | null = null;
+      if (source) {
+        document.querySelectorAll('iframe').forEach((f) => {
+          try {
+            if (f.contentWindow === source) frameEl = f;
+          } catch {
+            /* cross-origin compare still works for contentWindow === source */
+          }
+        });
+      }
+      if (!frameEl) frameEl = findVideoFrameEl(frameUrl);
+      if (!frameEl) return;
+      const ir = frameEl.getBoundingClientRect();
+      const x = ir.left + rect.left;
+      const y = ir.top + rect.bottom + 4;
+      if (hoverCloseTimer !== undefined) {
+        clearTimeout(hoverCloseTimer);
+        hoverCloseTimer = undefined;
+      }
+      lastHoverLemma = word;
+      pendingPopupFromVideoFrame = true;
+      queryWord(word, x, y);
+    }
 
-      let text = String(window.getSelection()).trim();
-      if (!text) return;
+    function scheduleCloseFromVideoFrame() {
+      // 视频帧弹窗：忽略 iframe mouseout 关闭请求
+      if (popupFromVideoFrame) return;
+      if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = ctx.setTimeout(() => {
+        hoverCloseTimer = undefined;
+        if (!mouseOverPopup) {
+          lastHoverLemma = null;
+          cleanWrappers();
+        }
+      }, 280);
+    }
 
-      if (getOption('english_only') && hasTooManyKorean(text)) return;
-      if (getOption('english_only') && [...text].filter(c => isKoreanCharCode(c.charCodeAt(0))).length > 0) return;
-      if (getOption('english_only') && hasTooManyChinese(text)) return;
-      if (text.length > 2000) return;
+    // 顶层：接收 background 转发的视频帧查词（跨域 postMessage 不可靠时的主路径）
+    if (isTopFrame) {
+      browser.runtime.onMessage.addListener((message: unknown) => {
+        const msg = message as {
+          type?: string;
+          word?: string;
+          frameUrl?: string;
+          rect?: { left: number; top: number; right: number; bottom: number };
+        } | undefined;
+        if (msg?.type === 'langeasy-frame-lookup' && msg.word && msg.rect) {
+          openLookupFromVideoFrame(msg.word, msg.rect, msg.frameUrl);
+          return;
+        }
+        if (msg?.type === 'langeasy-frame-lookup-close') {
+          scheduleCloseFromVideoFrame();
+        }
+      });
+    }
 
-      const spaces = countSpaces(text);
-      if ((!hasTooManyChinese(text) && spaces >= 3) ||
-          (hasTooManyChinese(text) && text.length > 4) ||
-          (hasTooManyKorean(text) && text.length > 4)) {
-        pageX = e.pageX; pageY = e.pageY; screenX = e.screenX; screenY = e.screenY;
+    // message - lookup iframe handshake + 视频帧转发查词到顶层
+    ctx.addEventListener(window, 'message', (e: MessageEvent) => {
+      const data = e.data as
+        | ResizeMessage
+        | LookupReadyMessage
+        | {
+            type?: string;
+            word?: string;
+            rect?: { left: number; top: number; right: number; bottom: number };
+          }
+        | undefined;
+
+      // 顶层：接收 Sprout 等跨域视频 iframe 的悬浮查词（fallback）
+      if (isTopFrame && data?.type === 'langeasy-lookup-from-frame' && data.word && data.rect) {
+        openLookupFromVideoFrame(data.word, data.rect, undefined, e.source);
         return;
       }
 
-      if (getOption('english_only')) {
-        text = extractEnglish(text);
+      if (isTopFrame && data?.type === 'langeasy-lookup-close-from-frame') {
+        scheduleCloseFromVideoFrame();
+        return;
       }
 
-      if (text) {
-        cleanWrappers();
-        // 存入选中单词，供 popup 自动查询
-        lastSelectedWordItem.setValue(text);
-        pageX = e.pageX; pageY = e.pageY; screenX = e.screenX; screenY = e.screenY;
-
-        if (getOption('mini_mode')) {
-          createMiniIcon(text, e.pageX, e.pageY);
-        } else {
-          queryWord(text, e.pageX, e.pageY);
-        }
-      }
-    });
-
-    // message - iframe height adjustment + lookup-ready handshake
-    ctx.addEventListener(window, 'message', (e: MessageEvent) => {
-      const data = e.data as ResizeMessage | LookupReadyMessage | undefined;
       if (data && data.type === 'lookup-ready') {
         const iframe = document.querySelector<HTMLIFrameElement>('#langeasyLexisIframe');
         if (iframe?.contentWindow && e.source === iframe.contentWindow) {
@@ -483,7 +663,7 @@ export default defineContentScript({
         }
         return;
       }
-      if (data && data.type === 'resize') {
+      if (data && data.type === 'resize' && 'height' in data && typeof data.height === 'number') {
         const iframe = document.querySelector<HTMLIFrameElement>('#langeasyLexisIframe');
         if (iframe) {
           // 按内容自适应高度；仅当超出视口时封顶并允许内部极细滚动
@@ -499,8 +679,10 @@ export default defineContentScript({
     // === 6. 异步加载设置（不阻塞事件监听器） ===
     let cleanupHighlight: (() => void) | null = null;
     (async () => {
-      // F5 刷新 / 页面加载时立即同步生词本（force=true；数量一致时跳过分页）
-      browser.runtime.sendMessage({ type: 'sync-wordbook', force: true }).catch(() => {});
+      // 仅顶层强制同步，避免每个视频 iframe 重复打 API
+      if (isTopFrame) {
+        browser.runtime.sendMessage({ type: 'sync-wordbook', force: true }).catch(() => {});
+      }
       try {
         isGetWord = await isGetWordItem.getValue();
         isCtrl = await isCtrlItem.getValue();
@@ -509,7 +691,7 @@ export default defineContentScript({
       } catch (e) {
         console.log('[bbdc] initSettings error:', e);
       }
-      // 初始化生词高亮
+      // 初始化生词高亮（顶层 + Bunny 字幕 iframe）
       try {
         cleanupHighlight = await initHighlight();
       } catch (e) {
