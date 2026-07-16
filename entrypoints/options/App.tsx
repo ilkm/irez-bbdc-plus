@@ -4,8 +4,9 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import {
   isGetWordItem, isCtrlItem, isMiniModeItem,
-  syncIntervalItem, highlightSettingsItem,
-  type ThemeMode, type HighlightSettings, type HighlightMode, type GroupMode,
+  syncIntervalItem, highlightSettingsItem, normalizeHighlightSettings,
+  wordColorIndex,
+  type ThemeMode, type HighlightSettings, type HighlightMode, type ColorGroupStops,
 } from '@/lib/storage';
 import { useTheme } from '@/lib/use-theme';
 import { cn } from '@/lib/utils';
@@ -28,26 +29,181 @@ const SYNC_INTERVAL_OPTIONS: { value: number; label: string }[] = [
   { value: 86400, label: '24小时' },
 ];
 
-const HIGHLIGHT_MODE_OPTIONS: { mode: HighlightMode; label: string }[] = [
+/** 高亮方式：关闭在纯色左侧，默认纯色 */
+const HIGHLIGHT_MODE_OPTIONS: { mode: HighlightMode | 'off'; label: string }[] = [
+  { mode: 'off', label: '关闭' },
   { mode: 'solid', label: '纯色' },
   { mode: 'gradient', label: '渐变' },
   { mode: 'group', label: '颜色组' },
 ];
 
 const PREVIEW_WORDS = ['welcome', 'hello', 'world'];
+const MAX_GROUPS = 24;
+const MAX_STOPS = 8;
+const DEFAULT_NEW_COLOR = '#4a9eff';
 
-/** 生成预览样式 */
-function previewStyle(s: HighlightSettings, index: number): React.CSSProperties {
-  if (s.mode === 'solid') return { color: s.color };
-  if (s.mode === 'gradient') return {
-    background: `linear-gradient(135deg, ${s.gradientFrom}, ${s.gradientTo})`,
-    WebkitBackgroundClip: 'text', backgroundClip: 'text',
+function cssPropsFromStops(stops: string[]): React.CSSProperties {
+  if (!stops.length) return {};
+  if (stops.length === 1) return { color: stops[0] };
+  return {
+    background: `linear-gradient(135deg, ${stops.join(', ')})`,
+    WebkitBackgroundClip: 'text',
+    backgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
   };
-  const colors = s.colors;
-  if (colors.length === 0) return {};
-  const i = s.groupMode === 'sequential' ? index % colors.length : Math.floor(Math.random() * colors.length);
-  return { color: colors[i] };
+}
+
+/** 生成预览样式（颜色组按单词哈希，保证同词同色） */
+function previewStyle(s: HighlightSettings, word: string): React.CSSProperties {
+  if (!s.enabled) return { color: 'inherit', opacity: 0.45 };
+  if (s.mode === 'solid') return { color: s.color };
+  if (s.mode === 'gradient') return cssPropsFromStops(s.gradientColors);
+  const groups = s.colorGroups;
+  if (!groups.length) return {};
+  const stops = groups[wordColorIndex(word, groups.length)] ?? groups[0];
+  return cssPropsFromStops(stops);
+}
+
+/** 单行色标编辑器（全局渐变用） */
+function ColorStopsEditor({
+  label,
+  colors,
+  min,
+  onChange,
+}: {
+  label: string;
+  colors: string[];
+  min: number;
+  onChange: (colors: string[]) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-2">
+      <span className="text-xs text-primary/80 pt-1 shrink-0">{label}</span>
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
+        {colors.map((c, i) => (
+          <div key={i} className="relative">
+            <input
+              type="color"
+              value={c}
+              onChange={(e) => {
+                const next = [...colors];
+                next[i] = e.target.value;
+                onChange(next);
+              }}
+              className="w-6 h-6 rounded cursor-pointer border border-(--c-input-border) bg-transparent"
+            />
+            {colors.length > min && (
+              <button
+                type="button"
+                onClick={() => onChange(colors.filter((_, idx) => idx !== i))}
+                className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-error text-white flex items-center justify-center leading-none"
+              >
+                <X className="w-2 h-2" />
+              </button>
+            )}
+          </div>
+        ))}
+        {colors.length < MAX_STOPS && (
+          <button
+            type="button"
+            onClick={() => onChange([...colors, DEFAULT_NEW_COLOR])}
+            className="w-6 h-6 rounded border border-dashed border-(--c-input-border) flex items-center justify-center text-secondary hover:text-primary"
+            title="添加色标"
+          >
+            <Plus className="w-3 h-3" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 颜色组编辑器：每组可含 1+ 色标（≥2 为渐变），同词按哈希固定一组 */
+function ColorGroupsEditor({
+  groups,
+  onChange,
+}: {
+  groups: ColorGroupStops[];
+  onChange: (groups: ColorGroupStops[]) => void;
+}) {
+  const updateGroup = (gi: number, stops: string[]) => {
+    const next = groups.map((g, i) => (i === gi ? stops : g));
+    onChange(next);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-primary/80">颜色组</span>
+        <span className="text-[10px] text-secondary">同词同色 · 组内可渐变</span>
+      </div>
+      <div className="space-y-1.5">
+        {groups.map((stops, gi) => (
+          <div
+            key={gi}
+            className="flex items-center gap-1.5 rounded-md border border-(--c-input-border) px-1.5 py-1"
+          >
+            <span className="text-[10px] text-secondary w-4 shrink-0">{gi + 1}</span>
+            <div className="flex flex-wrap items-center gap-1 flex-1">
+              {stops.map((c, si) => (
+                <div key={si} className="relative">
+                  <input
+                    type="color"
+                    value={c}
+                    onChange={(e) => {
+                      const next = [...stops];
+                      next[si] = e.target.value;
+                      updateGroup(gi, next);
+                    }}
+                    className="w-6 h-6 rounded cursor-pointer border border-(--c-input-border) bg-transparent"
+                  />
+                  {stops.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => updateGroup(gi, stops.filter((_, i) => i !== si))}
+                      className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-error text-white flex items-center justify-center leading-none"
+                    >
+                      <X className="w-2 h-2" />
+                    </button>
+                  )}
+                </div>
+              ))}
+              {stops.length < MAX_STOPS && (
+                <button
+                  type="button"
+                  onClick={() => updateGroup(gi, [...stops, DEFAULT_NEW_COLOR])}
+                  className="w-6 h-6 rounded border border-dashed border-(--c-input-border) flex items-center justify-center text-secondary hover:text-primary"
+                  title="添加渐变色标"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+            {groups.length > 1 && (
+              <button
+                type="button"
+                onClick={() => onChange(groups.filter((_, i) => i !== gi))}
+                className="text-secondary hover:text-error shrink-0 p-0.5"
+                title="删除此组"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      {groups.length < MAX_GROUPS && (
+        <button
+          type="button"
+          onClick={() => onChange([...groups, [DEFAULT_NEW_COLOR]])}
+          className="w-full py-1 rounded-md border border-dashed border-(--c-input-border) text-[11px] text-secondary hover:text-primary flex items-center justify-center gap-1"
+        >
+          <Plus className="w-3 h-3" />
+          添加颜色组
+        </button>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -56,7 +212,9 @@ export default function App() {
   const [isCtrl, setIsCtrl] = React.useState(true);
   const [isMiniMode, setIsMiniMode] = React.useState(false);
   const [syncInterval, setSyncInterval] = React.useState(21600);
-  const [hl, setHl] = React.useState<HighlightSettings>(highlightSettingsItem.fallback);
+  const [hl, setHl] = React.useState<HighlightSettings>(() =>
+    normalizeHighlightSettings(highlightSettingsItem.fallback),
+  );
 
   React.useEffect(() => {
     (async () => {
@@ -64,14 +222,16 @@ export default function App() {
       setIsCtrl(await isCtrlItem.getValue());
       setIsMiniMode(await isMiniModeItem.getValue());
       setSyncInterval(await syncIntervalItem.getValue());
-      setHl(await highlightSettingsItem.getValue());
+      setHl(normalizeHighlightSettings(await highlightSettingsItem.getValue()));
     })();
 
     const unwatchGetWord = isGetWordItem.watch(setIsGetWord);
     const unwatchCtrl = isCtrlItem.watch(setIsCtrl);
     const unwatchMiniMode = isMiniModeItem.watch(setIsMiniMode);
     const unwatchSyncInterval = syncIntervalItem.watch(setSyncInterval);
-    const unwatchHl = highlightSettingsItem.watch(setHl);
+    const unwatchHl = highlightSettingsItem.watch((v) =>
+      setHl(normalizeHighlightSettings(v)),
+    );
 
     return () => {
       unwatchGetWord(); unwatchCtrl(); unwatchMiniMode();
@@ -80,10 +240,20 @@ export default function App() {
   }, []);
 
   const updateHl = (partial: Partial<HighlightSettings>) => {
-    const next = { ...hl, ...partial };
+    const next = normalizeHighlightSettings({ ...hl, ...partial });
     setHl(next);
     highlightSettingsItem.setValue(next);
   };
+
+  const selectMode = (mode: HighlightMode | 'off') => {
+    if (mode === 'off') {
+      updateHl({ enabled: false });
+      return;
+    }
+    updateHl({ enabled: true, mode });
+  };
+
+  const activeMode: HighlightMode | 'off' = hl.enabled ? hl.mode : 'off';
 
   return (
     <div className="w-[340px] app-gradient-bg overflow-hidden text-[13px] font-sans text-primary animate-scale-in">
@@ -121,107 +291,67 @@ export default function App() {
         </div>
 
         {/* === 生词高亮 === */}
-        <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover-bg transition-colors cursor-pointer">
-          <Checkbox id="hlEnabled" checked={hl.enabled}
-            onCheckedChange={(v) => updateHl({ enabled: v })} />
-          <Label htmlFor="hlEnabled">生词高亮</Label>
-        </div>
-
-        {hl.enabled && (
-          <div className="px-2 py-1.5 space-y-2 animate-fade-in">
-            {/* 高亮方式 */}
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-primary/80">高亮方式</span>
-              <div className="flex gap-1">
-                {HIGHLIGHT_MODE_OPTIONS.map((opt) => (
-                  <button key={opt.mode} onClick={() => updateHl({ mode: opt.mode })}
-                    className={cn("px-2.5 py-1 rounded-md text-[11px] transition-all duration-200",
-                      hl.mode === opt.mode ? "bg-accent/20 text-accent" : "text-secondary hover:text-primary")}>
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* 纯色 */}
-            {hl.mode === 'solid' && (
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-primary/80">颜色</span>
-                <div className="flex items-center gap-2">
-                  <input type="color" value={hl.color} onChange={(e) => updateHl({ color: e.target.value })}
-                    className="w-7 h-7 rounded cursor-pointer border border-(--c-input-border) bg-transparent" />
-                  <span className="text-[10px] text-secondary font-mono">{hl.color}</span>
-                </div>
-              </div>
-            )}
-
-            {/* 渐变 */}
-            {hl.mode === 'gradient' && (
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-primary/80">渐变色</span>
-                <div className="flex items-center gap-1.5">
-                  <input type="color" value={hl.gradientFrom} onChange={(e) => updateHl({ gradientFrom: e.target.value })}
-                    className="w-7 h-7 rounded cursor-pointer border border-(--c-input-border) bg-transparent" />
-                  <span className="text-secondary text-xs">→</span>
-                  <input type="color" value={hl.gradientTo} onChange={(e) => updateHl({ gradientTo: e.target.value })}
-                    className="w-7 h-7 rounded cursor-pointer border border-(--c-input-border) bg-transparent" />
-                </div>
-              </div>
-            )}
-
-            {/* 颜色组 */}
-            {hl.mode === 'group' && (
-              <>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-primary/80">颜色组</span>
-                  <div className="flex items-center gap-1.5">
-                    {hl.colors.map((c, i) => (
-                      <div key={i} className="relative">
-                        <input type="color" value={c}
-                          onChange={(e) => { const colors = [...hl.colors]; colors[i] = e.target.value; updateHl({ colors }); }}
-                          className="w-6 h-6 rounded cursor-pointer border border-(--c-input-border) bg-transparent" />
-                        {hl.colors.length > 1 && (
-                          <button onClick={() => updateHl({ colors: hl.colors.filter((_, idx) => idx !== i) })}
-                            className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-error text-white flex items-center justify-center text-[8px] leading-none">
-                            <X className="w-2 h-2" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    {hl.colors.length < 8 && (
-                      <button onClick={() => updateHl({ colors: [...hl.colors, '#4a9eff'] })}
-                        className="w-6 h-6 rounded border border-dashed border-(--c-input-border) flex items-center justify-center text-secondary hover:text-primary">
-                        <Plus className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-primary/80">方式</span>
-                  <div className="flex gap-1">
-                    {(['sequential', 'random'] as GroupMode[]).map((m) => (
-                      <button key={m} onClick={() => updateHl({ groupMode: m })}
-                        className={cn("px-2.5 py-1 rounded-md text-[11px] transition-all duration-200",
-                          hl.groupMode === m ? "bg-accent/20 text-accent" : "text-secondary hover:text-primary")}>
-                        {m === 'sequential' ? '顺序' : '随机'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* 预览 */}
-            <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-(--c-input-bg)">
-              <span className="text-[10px] text-secondary">预览</span>
-              <div className="flex gap-2">
-                {PREVIEW_WORDS.map((w, i) => (
-                  <span key={w} className="text-[11px] font-medium" style={previewStyle(hl, i)}>{w}</span>
-                ))}
-              </div>
+        <div className="px-2 py-2 space-y-2 rounded-lg hover-bg transition-colors">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-primary/80 shrink-0">高亮方式</span>
+            <div className="flex flex-wrap justify-end gap-1">
+              {HIGHLIGHT_MODE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.mode}
+                  type="button"
+                  onClick={() => selectMode(opt.mode)}
+                  className={cn(
+                    "px-2 py-1 rounded-md text-[11px] transition-all duration-200",
+                    activeMode === opt.mode ? "bg-accent/20 text-accent" : "text-secondary hover:text-primary",
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
             </div>
           </div>
-        )}
+
+          {hl.enabled && (
+            <div className="space-y-2 animate-fade-in">
+              {hl.mode === 'solid' && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-primary/80">颜色</span>
+                  <div className="flex items-center gap-2">
+                    <input type="color" value={hl.color} onChange={(e) => updateHl({ color: e.target.value })}
+                      className="w-7 h-7 rounded cursor-pointer border border-(--c-input-border) bg-transparent" />
+                    <span className="text-[10px] text-secondary font-mono">{hl.color}</span>
+                  </div>
+                </div>
+              )}
+
+              {hl.mode === 'gradient' && (
+                <ColorStopsEditor
+                  label="渐变色"
+                  colors={hl.gradientColors}
+                  min={2}
+                  onChange={(gradientColors) => updateHl({ gradientColors })}
+                />
+              )}
+
+              {hl.mode === 'group' && (
+                <ColorGroupsEditor
+                  groups={hl.colorGroups}
+                  onChange={(colorGroups) => updateHl({ colorGroups })}
+                />
+              )}
+
+              {/* 预览 */}
+              <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-(--c-input-bg)">
+                <span className="text-[10px] text-secondary">预览</span>
+                <div className="flex gap-2">
+                  {PREVIEW_WORDS.map((w) => (
+                    <span key={w} className="text-[11px] font-medium" style={previewStyle(hl, w)}>{w}</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Checkbox: 划词翻译 */}
         <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover-bg transition-colors cursor-pointer">

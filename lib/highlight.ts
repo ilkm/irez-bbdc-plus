@@ -1,4 +1,11 @@
-import { wordbookWordsItem, highlightSettingsItem, type HighlightSettings } from './storage';
+import {
+  wordbookWordsItem,
+  highlightSettingsItem,
+  normalizeHighlightSettings,
+  cssFromStops,
+  wordColorIndex,
+  type HighlightSettings,
+} from './storage';
 
 // === 内部状态 ===
 let observer: MutationObserver | null = null;
@@ -6,7 +13,6 @@ let wordSet: Set<string> = new Set();
 let settings: HighlightSettings | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 let updateTimer: ReturnType<typeof setTimeout> | undefined;
-let highlightCounter = 0;
 let isHighlighting = false; // 防止 MutationObserver 级联
 
 // 需要跳过的标签
@@ -15,25 +21,23 @@ const SKIP_TAGS = new Set([
   'NOSCRIPT', 'CODE', 'PRE', 'OBJECT', 'EMBED',
 ]);
 
-// === 样式生成 ===
-function buildStyle(s: HighlightSettings, index: number): string {
+// === 样式生成（按单词稳定配色） ===
+function buildStyle(s: HighlightSettings, word: string): string {
+  const base = 'font: inherit; letter-spacing: inherit; word-spacing: inherit; vertical-align: baseline;';
   if (s.mode === 'solid') {
-    return `color: ${s.color};`;
+    return `${base}color: ${s.color};`;
   }
   if (s.mode === 'gradient') {
-    return (
-      `background: linear-gradient(135deg, ${s.gradientFrom}, ${s.gradientTo});` +
-      `-webkit-background-clip: text; background-clip: text;` +
-      `-webkit-text-fill-color: transparent;`
-    );
+    const stops = s.gradientColors?.length
+      ? s.gradientColors
+      : ([s.gradientFrom, s.gradientTo].filter(Boolean) as string[]);
+    return base + (cssFromStops(stops) || '');
   }
-  // group
-  const colors = s.colors;
-  if (colors.length === 0) return '';
-  const i = s.groupMode === 'sequential'
-    ? index % colors.length
-    : Math.floor(Math.random() * colors.length);
-  return `color: ${colors[i]};`;
+  // group：按单词哈希固定到某一组（组内可为纯色或渐变）
+  const groups = s.colorGroups;
+  if (!groups || groups.length === 0) return base;
+  const stops = groups[wordColorIndex(word, groups.length)] ?? groups[0];
+  return base + (cssFromStops(stops) || '');
 }
 
 // === DOM 扫描与高亮 ===
@@ -71,7 +75,7 @@ function highlightNode(root: Node): void {
         if (m.index > last) frags.push(document.createTextNode(text.slice(last, m.index)));
         const span = document.createElement('span');
         span.dataset.langeasyHighlight = '1';
-        span.style.cssText = buildStyle(settings, highlightCounter++);
+        span.style.cssText = buildStyle(settings, m[0]);
         span.textContent = m[0];
         frags.push(span);
         last = m.index + m[0].length;
@@ -104,7 +108,6 @@ function clearAll(): void {
         p.normalize();
       }
     });
-    highlightCounter = 0;
   } finally {
     isHighlighting = false;
   }
@@ -145,14 +148,14 @@ function setupObserver(): void {
 
 // === 初始化（在 content script 中调用） ===
 export async function initHighlight(): Promise<() => void> {
-  const [words, s] = await Promise.all([
+  const [words, raw] = await Promise.all([
     wordbookWordsItem.getValue(),
     highlightSettingsItem.getValue(),
   ]);
   wordSet = new Set(words.map(w => w.toLowerCase()));
-  settings = s;
+  settings = normalizeHighlightSettings(raw);
 
-  if (s.enabled && wordSet.size > 0) {
+  if (settings.enabled && wordSet.size > 0) {
     applyHighlight();
     setupObserver();
   }
@@ -175,11 +178,11 @@ export async function initHighlight(): Promise<() => void> {
   
   // 监听高亮设置变化（关闭/开启/颜色切换）
   const unwatchSettings = highlightSettingsItem.watch((newSettings) => {
-    settings = newSettings;
+    settings = normalizeHighlightSettings(newSettings);
     clearTimeout(updateTimer);
     updateTimer = setTimeout(() => {
       clearAll();
-      if (newSettings.enabled && wordSet.size > 0) {
+      if (settings?.enabled && wordSet.size > 0) {
         applyHighlight();
         if (!observer) setupObserver();
       } else if (observer) {

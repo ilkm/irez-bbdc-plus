@@ -39,10 +39,15 @@ export interface ResizeMessage {
   height: number;
 }
 
+// lookup React 已挂载，可安全接收 lookup 消息
+export interface LookupReadyMessage {
+  type: 'lookup-ready';
+}
+
 // 音频类型
 export type AudioType = 'UK' | 'US';
 
-// 生词本添加请求数据
+// 生词本添加/删除请求数据
 export interface NewWordPayload {
   word: string;
   course: string;
@@ -53,14 +58,32 @@ export interface NewWordPayload {
   opcode: string;
 }
 
+/** 生词本列表单项 */
+export interface WordbookListItem {
+  word: string;
+  info?: string;
+  ukpron?: string;
+  uspron?: string;
+  updatetime?: string;
+  [key: string]: unknown;
+}
+
+/** 生词本分页信息 */
+export interface WordbookPageInfo {
+  totalRecord: number;
+  pageSize: number;
+  totalPage: number;
+  currentPage: number;
+}
+
 // 生词本列表 API 响应（bbdc.cn/api/user-new-word?page=0）
+// 实际字段为 wordList + pageInfo（兼容旧字段 list/total）
 export interface WordbookListResponse {
   result_code: number;
   data_body: {
-    list: Array<{
-      word: string;
-      info?: string;
-      [key: string]: unknown;
-    }>;
+    wordList?: WordbookListItem[];
+    pageInfo?: WordbookPageInfo;
+    list?: WordbookListItem[];
+    total?: number;
   };
 }

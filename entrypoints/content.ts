@@ -1,5 +1,5 @@
 import { fetchWord, escapeQuotes } from '@/lib/api';
-import { isGetWordItem, isCtrlItem, isMiniModeItem, lastSelectedWordItem } from '@/lib/storage';
+import { isGetWordItem, isCtrlItem, isMiniModeItem, lastSelectedWordItem, themeItem, type ThemeMode } from '@/lib/storage';
 import {
   isEnglishChar,
   isKoreanCharCode,
@@ -8,8 +8,21 @@ import {
   countSpaces,
   extractEnglish,
 } from '@/lib/text-utils';
-import type { WordLookupResponse, LookupMessage, ResizeMessage } from '@/lib/types';
+import type { WordLookupResponse, LookupMessage, ResizeMessage, LookupReadyMessage } from '@/lib/types';
 import { initHighlight } from '@/lib/highlight';
+
+function getSystemTheme(): 'dark' | 'light' {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function resolveTheme(mode: ThemeMode): 'dark' | 'light' {
+  return mode === 'system' ? getSystemTheme() : mode;
+}
+
+/** 悬浮球边框色：跟随扩展主题 accent */
+function miniBorderColor(mode: ThemeMode): string {
+  return resolveTheme(mode) === 'dark' ? '#5ab0ff' : '#4a9eff';
+}
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -20,26 +33,30 @@ export default defineContentScript({
       .langeasy-mini-icon {
         position: absolute;
         z-index: 999999;
-        background: #0f0f16;
-        border: 1px solid rgba(74, 158, 255, 0.25);
-        border-radius: 10px;
-        width: 32px;
-        height: 32px;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.4), 0 0 10px rgba(74,158,255,0.2);
+        box-sizing: border-box;
+        background: transparent;
+        border: 1px solid var(--langeasy-mini-border, #5ab0ff);
+        border-radius: 50%;
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        box-shadow: none;
         cursor: pointer;
         display: flex;
         align-items: center;
         justify-content: center;
         opacity: 0;
         animation: langeasyFadeIn 0.2s ease forwards;
+        overflow: hidden;
       }
       .langeasy-mini-icon:hover {
-        border-color: rgba(74, 158, 255, 0.5);
-        box-shadow: 0 4px 16px rgba(0,0,0,0.4), 0 0 16px rgba(74,158,255,0.4);
+        opacity: 0.9;
       }
       .langeasy-mini-icon img {
-        width: 22px;
-        height: 22px;
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        display: block;
       }
       @keyframes langeasyFadeIn {
         from { opacity: 0; }
@@ -47,6 +64,10 @@ export default defineContentScript({
       }
     `;
     document.head.appendChild(style);
+
+    function applyMiniTheme(mode: ThemeMode) {
+      document.documentElement.style.setProperty('--langeasy-mini-border', miniBorderColor(mode));
+    }
 
     // === 2. State Variables ===
     let mouseOverPopup = false;
@@ -58,6 +79,7 @@ export default defineContentScript({
     let lastStartContainer: Node | null = null;
     let lastStartOffset = 0;
     let lastSelectedText: string | null = null;
+    let pendingLookup: LookupMessage | null = null;
 
     // === 3. Settings Cache (defaults match storage fallbacks) ===
     let isGetWord = true;
@@ -78,6 +100,7 @@ export default defineContentScript({
 
     function cleanWrappers(): boolean {
       mouseOverPopup = false;
+      pendingLookup = null;
       if (currentWrapper) {
         while (wrapperArray.length) {
           document.body.removeChild(wrapperArray.pop()!);
@@ -86,6 +109,11 @@ export default defineContentScript({
         return true;
       }
       return false;
+    }
+
+    function deliverPendingLookup(iframeEl: HTMLIFrameElement) {
+      if (!pendingLookup || !iframeEl.contentWindow) return;
+      iframeEl.contentWindow.postMessage(pendingLookup, '*');
     }
 
     function createIframe(word: string, data: WordLookupResponse | null, pX: number, pY: number) {
@@ -99,10 +127,21 @@ export default defineContentScript({
       const iframe = document.createElement('iframe');
       iframe.setAttribute('src', iframeSrc);
       iframe.id = 'langeasyLexisIframe';
-      iframe.style.border = 'none';
+      iframe.setAttribute('scrolling', 'no');
+      iframe.style.cssText = [
+        'border: none',
+        'display: block',
+        'background: transparent',
+        'width: 320px',
+        'max-width: min(400px, 90vw)',
+        'height: 0',
+        'overflow: hidden',
+        'vertical-align: top',
+      ].join(';');
       wrapper.id = 'yddWrapper';
       wrapper.style.position = 'absolute';
       wrapper.style.zIndex = '99999';
+      wrapper.style.overflow = 'visible';
 
       left = pX + 300 < innerW ? pX : pX - 300 - 20;
       wrapper.style.left = left + 'px';
@@ -117,17 +156,12 @@ export default defineContentScript({
       wrapper.onmouseover = () => { mouseOverPopup = true; };
       wrapper.onmouseout = () => { mouseOverPopup = false; };
 
+      // 等 iframe 内 React 发出 lookup-ready 再投递，避免 onload 时 listener 尚未注册导致空白弹窗
+      pendingLookup = { type: 'lookup', word, data };
+
       document.body.style.position = 'static';
       wrapper.appendChild(iframe);
       document.body.appendChild(wrapper);
-
-      const iframeEl = document.querySelector<HTMLIFrameElement>('#langeasyLexisIframe');
-      if (iframeEl) {
-        iframeEl.onload = () => {
-          const message: LookupMessage = { type: 'lookup', word, data };
-          iframeEl.contentWindow?.postMessage(message, '*');
-        };
-      }
 
       wrapperArray.push(wrapper);
 
@@ -139,6 +173,7 @@ export default defineContentScript({
       if (currentWrapper &&
           currentWrapper.style.top === wrapper.style.top &&
           currentWrapper.style.left === wrapper.style.left) {
+        pendingLookup = null;
         document.body.removeChild(wrapper);
         wrapperArray.pop();
       } else {
@@ -282,14 +317,18 @@ export default defineContentScript({
       }
     }, { capture: true });
 
-    // click - close popup and mini icon
-    ctx.addEventListener(document, 'click', (e: MouseEvent) => {
+    // click - close popup (mini icon 改由 mousedown 关闭，避免划词后的 click 立刻清掉图标)
+    ctx.addEventListener(document, 'click', () => {
       const wrapper = document.getElementById('yddWrapper');
       if (wrapper) {
         if (Math.round(Date.now()) - last_time > 200) {
           wrapper.style.display = 'none';
         }
       }
+    });
+
+    // mousedown - dismiss mini icon on next interaction (not the selection's trailing click)
+    ctx.addEventListener(document, 'mousedown', (e: MouseEvent) => {
       const target = e.target as Element;
       if (target && target.id !== 'langeasyMiniIcon' && !target.closest('#langeasyMiniIcon')) {
         removeMiniIcon();
@@ -345,13 +384,25 @@ export default defineContentScript({
       }
     });
 
-    // message - iframe height adjustment
+    // message - iframe height adjustment + lookup-ready handshake
     ctx.addEventListener(window, 'message', (e: MessageEvent) => {
-      const data = e.data as ResizeMessage | undefined;
+      const data = e.data as ResizeMessage | LookupReadyMessage | undefined;
+      if (data && data.type === 'lookup-ready') {
+        const iframe = document.querySelector<HTMLIFrameElement>('#langeasyLexisIframe');
+        if (iframe?.contentWindow && e.source === iframe.contentWindow) {
+          deliverPendingLookup(iframe);
+        }
+        return;
+      }
       if (data && data.type === 'resize') {
         const iframe = document.querySelector<HTMLIFrameElement>('#langeasyLexisIframe');
         if (iframe) {
-          iframe.style.height = data.height + 'px';
+          // 按内容自适应高度；仅当超出视口时封顶并允许内部极细滚动
+          const maxH = Math.max(120, Math.floor(window.innerHeight * 0.75));
+          const h = Math.max(1, Math.min(data.height, maxH));
+          iframe.style.height = h + 'px';
+          iframe.style.overflow = data.height > maxH ? 'auto' : 'hidden';
+          iframe.setAttribute('scrolling', data.height > maxH ? 'yes' : 'no');
         }
       }
     });
@@ -359,10 +410,13 @@ export default defineContentScript({
     // === 6. 异步加载设置（不阻塞事件监听器） ===
     let cleanupHighlight: (() => void) | null = null;
     (async () => {
+      // F5 刷新 / 页面加载时立即同步生词本（force=true；数量一致时跳过分页）
+      browser.runtime.sendMessage({ type: 'sync-wordbook', force: true }).catch(() => {});
       try {
         isGetWord = await isGetWordItem.getValue();
         isCtrl = await isCtrlItem.getValue();
         isMiniMode = await isMiniModeItem.getValue();
+        applyMiniTheme(await themeItem.getValue());
       } catch (e) {
         console.log('[bbdc] initSettings error:', e);
       }
@@ -378,11 +432,22 @@ export default defineContentScript({
     const unwatchGetWord = isGetWordItem.watch((v) => { isGetWord = v; });
     const unwatchCtrl = isCtrlItem.watch((v) => { isCtrl = v; });
     const unwatchMiniMode = isMiniModeItem.watch((v) => { isMiniMode = v; });
+    const unwatchTheme = themeItem.watch((mode) => { applyMiniTheme(mode); });
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const onSystemThemeChange = () => {
+      themeItem.getValue().then((mode) => {
+        if (mode === 'system') applyMiniTheme(mode);
+      });
+    };
+    mediaQuery.addEventListener('change', onSystemThemeChange);
 
     ctx.onInvalidated(() => {
       unwatchGetWord();
       unwatchCtrl();
       unwatchMiniMode();
+      unwatchTheme();
+      mediaQuery.removeEventListener('change', onSystemThemeChange);
+      document.documentElement.style.removeProperty('--langeasy-mini-border');
       if (cleanupHighlight) cleanupHighlight();
     });
   },

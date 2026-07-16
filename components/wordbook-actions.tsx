@@ -1,7 +1,7 @@
 import * as React from "react";
-import { BookPlus, Check, Loader2, ExternalLink } from "lucide-react";
-import { addWord, checkLogin, HOST } from "@/lib/api";
-import { isWordInWordbook, addWordToLocal } from "@/lib/wordbook-sync";
+import { BookPlus, Check, Loader2, ExternalLink, Trash2 } from "lucide-react";
+import { addWord, deleteWord, checkLogin, HOST } from "@/lib/api";
+import { isWordInWordbook, addWordToLocal, removeWordFromLocal } from "@/lib/wordbook-sync";
 import { wordbookWordsItem } from "@/lib/storage";
 
 export interface WordbookActionsProps {
@@ -9,7 +9,14 @@ export interface WordbookActionsProps {
   info: string;
 }
 
-type WordStatus = "checking" | "canAdd" | "alreadyAdded" | "notLoggedIn" | "adding" | "added";
+type WordStatus =
+  | "checking"
+  | "canAdd"
+  | "alreadyAdded"
+  | "notLoggedIn"
+  | "adding"
+  | "added"
+  | "removing";
 
 export function WordbookActions({ word, info }: WordbookActionsProps) {
   const [status, setStatus] = React.useState<WordStatus>("checking");
@@ -28,7 +35,6 @@ export function WordbookActions({ word, info }: WordbookActionsProps) {
           setStatus("alreadyAdded");
           return;
         }
-        // 未在本地生词本中，校验登录状态
         try {
           const resp = await checkLogin();
           if (cancelled) return;
@@ -44,10 +50,15 @@ export function WordbookActions({ word, info }: WordbookActionsProps) {
 
     checkWord();
 
-    // 监听 storage 变化 — 其他页面添加生词时自动刷新
     const unwatch = wordbookWordsItem.watch(() => {
       if (cancelled) return;
-      if (statusRef.current === "adding" || statusRef.current === "added") return;
+      if (
+        statusRef.current === "adding" ||
+        statusRef.current === "added" ||
+        statusRef.current === "removing"
+      ) {
+        return;
+      }
       checkWord();
     });
 
@@ -61,12 +72,23 @@ export function WordbookActions({ word, info }: WordbookActionsProps) {
     setStatus("adding");
     try {
       await addWord(word, info);
-      // API 成功后追加到本地（IndexedDB + chrome.storage.local）
       await addWordToLocal(word, info);
       setStatus("added");
     } catch (e) {
       console.log("[bbdc] addWord error:", e);
       setStatus("notLoggedIn");
+    }
+  };
+
+  const handleRemove = async () => {
+    setStatus("removing");
+    try {
+      await deleteWord(word, info);
+      await removeWordFromLocal(word);
+      setStatus("canAdd");
+    } catch (e) {
+      console.log("[bbdc] deleteWord error:", e);
+      setStatus("alreadyAdded");
     }
   };
 
@@ -98,17 +120,40 @@ export function WordbookActions({ word, info }: WordbookActionsProps) {
     );
   }
 
+  if (status === "removing") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-secondary">
+        <Loader2 className="w-3 h-3 animate-spin" />
+        <span>删除中...</span>
+      </span>
+    );
+  }
+
   if (status === "added" || status === "alreadyAdded") {
     return (
-      <a
-        href={`${HOST}/newword`}
-        target="_blank"
-        title="查看生词本"
-        className="inline-flex items-center gap-1 text-[11px] text-success hover:opacity-80 transition-opacity"
-      >
-        <Check className="w-3 h-3" />
-        <span>已加入生词本</span>
-      </a>
+      <span className="inline-flex items-center gap-2 text-[11px]">
+        <a
+          href={`${HOST}/newword`}
+          target="_blank"
+          title="查看生词本"
+          className="inline-flex items-center gap-1 text-success hover:opacity-80 transition-opacity"
+        >
+          <Check className="w-3 h-3" />
+          <span>已加入生词本</span>
+        </a>
+        <a
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            handleRemove();
+          }}
+          title="从生词本删除"
+          className="inline-flex items-center gap-1 text-secondary hover:text-error transition-colors cursor-pointer"
+        >
+          <Trash2 className="w-3 h-3" />
+          <span>删除</span>
+        </a>
+      </span>
     );
   }
 

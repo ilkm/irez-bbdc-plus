@@ -26,10 +26,11 @@ export default defineBackground(() => {
     }
   });
 
-  // 监听来自 popup 的手动同步请求（登录成功后触发）
+  // 监听来自 popup / content script 的同步请求
   browser.runtime.onMessage.addListener((message) => {
     if (message?.type === 'sync-wordbook') {
-      syncWordbook();
+      // 默认 force=true；仅显式传 false 时走冷却
+      syncWordbook(message.force !== false);
     }
   });
 

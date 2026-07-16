@@ -1,6 +1,6 @@
 {
   "name": "bbdc-extension",
-  "description": "使用不背单词查词以及添加生字本功能，支持Chorme的选中划词翻译，有问题请找https://github.com/ilkm 反馈",
+  "description": "使用不背单词查词以及添加生字本功能，支持Chorme的选中划词翻译，有问题请找https://github.com/ilkm/irez-bbdc-plus/issues 反馈",
   "private": true,
   "version": "1.2.2",
   "type": "module",

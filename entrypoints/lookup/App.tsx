@@ -3,7 +3,7 @@ import { WordDefinition } from '@/components/word-definition';
 import { WordbookActions } from '@/components/wordbook-actions';
 import { escapeQuotes, HOST } from '@/lib/api';
 import { useTheme } from '@/lib/use-theme';
-import type { WordLookupResponse, LookupMessage, ResizeMessage } from '@/lib/types';
+import type { WordLookupResponse, LookupMessage, ResizeMessage, LookupReadyMessage } from '@/lib/types';
 
 interface LookupState {
   word: string;
@@ -15,7 +15,7 @@ export default function App() {
   const [lookupState, setLookupState] = React.useState<LookupState | null>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
 
-  // 监听来自 content.ts 的消息
+  // 监听来自 content.ts 的消息；挂载后通知父页面可投递，避免 onload 竞态丢消息
   React.useEffect(() => {
     const handler = (e: MessageEvent) => {
       const msg = e.data as LookupMessage;
@@ -24,15 +24,21 @@ export default function App() {
       }
     };
     window.addEventListener('message', handler);
+    const readyMsg: LookupReadyMessage = { type: 'lookup-ready' };
+    window.parent.postMessage(readyMsg, '*');
     return () => window.removeEventListener('message', handler);
   }, []);
 
-  // 发送高度给父窗口 — 使用 rootRef 精确测量
+  // 发送高度给父窗口 — 测量整页内容高度，父页面据此放大 iframe，尽量避免滚动条
   const sendHeight = React.useCallback(() => {
     requestAnimationFrame(() => {
       const el = rootRef.current;
       if (!el) return;
-      const height = el.scrollHeight;
+      // 含 margin（mt）的完整高度
+      const styles = window.getComputedStyle(el);
+      const mt = parseFloat(styles.marginTop) || 0;
+      const mb = parseFloat(styles.marginBottom) || 0;
+      const height = Math.ceil(el.getBoundingClientRect().height + mt + mb);
       const resizeMsg: ResizeMessage = { type: 'resize', height };
       window.parent.postMessage(resizeMsg, '*');
     });
@@ -40,7 +46,6 @@ export default function App() {
 
   React.useLayoutEffect(() => {
     if (lookupState) {
-      // 延迟一帧确保动画完成后测量准确
       const timer = setTimeout(sendHeight, 50);
       return () => clearTimeout(timer);
     }
@@ -65,7 +70,7 @@ export default function App() {
     <div
       ref={rootRef}
       onClick={(e) => e.stopPropagation()}
-      className="min-w-[260px] max-w-[400px] font-sans mt-[8px] animate-scale-in"
+      className="min-w-[260px] max-w-[400px] w-max font-sans mt-[8px] animate-scale-in"
     >
       <div className="glass-card-solid rounded-2xl overflow-hidden">
         {/* 透明标题栏 */}
