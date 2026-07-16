@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+/* === Theme CSS Variables === */
+:root,
+[data-theme="dark"] {
+  --c-primary: #e8e8ed;
+  --c-secondary: #a0a0a8;
+  --c-accent: #5ab0ff;
+  --c-accent-hover: #7ac0ff;
+  --c-accent-rgb: 90, 176, 255;
+  --c-success: #5eead4;
+  --c-error: #ff6b6b;
+  --c-surface: rgba(15, 15, 22, 0.92);
+  --c-titlebar: rgba(255, 255, 255, 0.03);
+  --c-hover: rgba(255, 255, 255, 0.05);
+  --c-line: rgba(255, 255, 255, 0.1);
+  --c-bg: #0a0a0f;
+  --c-bg-end: #111118;
+  --c-shadow: rgba(0, 0, 0, 0.4);
+  --c-input-bg: rgba(255, 255, 255, 0.05);
+  --c-input-border: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="light"] {
+  --c-primary: #1a1a2e;
+  --c-secondary: #64748b;
+  --c-accent: #4a9eff;
+  --c-accent-hover: #2980d9;
+  --c-accent-rgb: 74, 158, 255;
+  --c-success: #0d9488;
+  --c-error: #e53e3e;
+  --c-surface: rgba(255, 255, 255, 0.95);
+  --c-titlebar: rgba(0, 0, 0, 0.02);
+  --c-hover: rgba(0, 0, 0, 0.04);
+  --c-line: rgba(0, 0, 0, 0.08);
+  --c-bg: #f5f6f8;
+  --c-bg-end: #ffffff;
+  --c-shadow: rgba(0, 0, 0, 0.12);
+  --c-input-bg: rgba(0, 0, 0, 0.03);
+  --c-input-border: rgba(0, 0, 0, 0.1);
+}
+
+/* === Tailwind Theme Mapping === */
+@theme {
+  --color-primary: var(--c-primary);
+  --color-secondary: var(--c-secondary);
+  --color-accent: var(--c-accent);
+  --color-accent-hover: var(--c-accent-hover);
+  --color-success: var(--c-success);
+  --color-error: var(--c-error);
+  --color-surface: var(--c-surface);
+  --color-titlebar: var(--c-titlebar);
+  --color-hover: var(--c-hover);
+  --color-line: var(--c-line);
+  --color-bg-base: var(--c-bg);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+}
+
+/* === Base Styles === */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background: transparent;
+    color: var(--c-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  a {
+    text-decoration: none;
+    color: var(--c-accent);
+    transition: color 0.2s ease;
+  }
+
+  a:hover {
+    color: var(--c-accent-hover);
+  }
+}
+
+/* === Utility Classes === */
+@layer utilities {
+  .glass-card-solid {
+    background: var(--c-surface);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--c-line);
+    box-shadow:
+      0 8px 32px var(--c-shadow),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  .glass-card {
+    background: var(--c-hover);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid var(--c-line);
+    box-shadow:
+      0 4px 16px var(--c-shadow),
+      inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .app-gradient-bg {
+    background:
+      radial-gradient(ellipse at top left, rgba(var(--c-accent-rgb), 0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at bottom right, rgba(94, 234, 212, 0.04) 0%, transparent 50%),
+      linear-gradient(180deg, var(--c-bg) 0%, var(--c-bg-end) 100%);
+  }
+
+  .hover-bg:hover {
+    background: var(--c-hover);
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate-scale-in {
+    animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+}

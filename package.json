@@ -1,0 +1,43 @@
+{
+  "name": "bbdc-extension",
+  "description": "使用不背单词查词以及添加生字本功能，支持Chorme的选中划词翻译，有问题请找https://github.com/ilkm 反馈",
+  "private": true,
+  "version": "1.2.2",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "compile": "tsc --noEmit",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "@base-ui-components/react": "^1.0.0-rc.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "dexie": "^4.4.4",
+    "lucide-react": "^0.544.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "tailwind-merge": "^3.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@wxt-dev/module-react": "^1.1.5",
+    "autoprefixer": "^10.5.3",
+    "postcss": "^8.5.19",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^5.9.3",
+    "wxt": "^0.20.27"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true,
+    "fsevents@2.3.3": true,
+    "spawn-sync@1.0.15": true
+  }
+}
