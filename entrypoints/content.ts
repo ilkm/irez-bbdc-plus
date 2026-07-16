@@ -87,8 +87,8 @@ export default defineContentScript({
     let lastStartOffset = 0;
     let lastSelectedText: string | null = null;
     let pendingLookup: LookupMessage | null = null;
-    let hoverOpenTimer: ReturnType<typeof setTimeout> | undefined;
-    let hoverCloseTimer: ReturnType<typeof setTimeout> | undefined;
+    let hoverOpenTimer: number | undefined;
+    let hoverCloseTimer: number | undefined;
     let lastHoverLemma: string | null = null;
 
     // === 3. Settings Cache (defaults match storage fallbacks) ===
