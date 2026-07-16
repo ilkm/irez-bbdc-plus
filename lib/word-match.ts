@@ -13,9 +13,10 @@ export function normalizeToken(token: string): string {
  * - 以字母开头，不含包裹性引号（避免 'cloud 把引号算进词）
  * - 允许词中缩写 it's / can't
  * - 允许连字符复合词 cloud-native
+ * - 不得贴在数字/下划线旁（避免 UUID / 4a0 等被拆出 a）
  */
 export const WORD_RE =
-  /[a-zA-Z]+(?:[\u2018\u2019'][a-zA-Z]+)*(?:-[a-zA-Z]+(?:[\u2018\u2019'][a-zA-Z]+)*)*/g;
+  /(?<![A-Za-z0-9_])[a-zA-Z]+(?:[\u2018\u2019'][a-zA-Z]+)*(?:-[a-zA-Z]+(?:[\u2018\u2019'][a-zA-Z]+)*)*(?![A-Za-z0-9_])/g;
 
 /** 缩写后缀：按长到短匹配（n't 单独处理） */
 const CONTRACTION_SUFFIXES = ["'re", "'ve", "'ll", "'d", "'m", "'s"] as const;

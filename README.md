@@ -1,6 +1,6 @@
 # 不背单词查词 · 使用手册
 
-> 版本 1.2.2｜Chrome / Edge 等 Chromium 内核浏览器扩展  
+> 版本 1.0.0｜Chrome / Edge 等 Chromium 内核浏览器扩展  
 > 问题反馈：[GitHub Issues](https://github.com/ilkm/irez-bbdc-plus/issues)
 
 ---
@@ -364,4 +364,4 @@ bbdc-plus/
 
 ---
 
-*文档随版本 1.2.2 编写。功能以实际扩展界面为准。*
+*文档随版本 1.0.0 编写。功能以实际扩展界面为准。*

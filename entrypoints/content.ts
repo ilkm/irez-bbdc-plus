@@ -26,7 +26,21 @@ function miniBorderColor(mode: ThemeMode): string {
 
 export default defineContentScript({
   matches: ['<all_urls>'],
+  // Bunny Stream 等字幕在跨域 iframe（如 iframe.mediadelivery.net）内
+  allFrames: true,
   async main(ctx) {
+    // 子 frame：只做生词高亮（不注入划词弹窗等顶层 UI）
+    if (window !== window.top) {
+      let cleanupHighlight: (() => void) | null = null;
+      try {
+        cleanupHighlight = await initHighlight();
+      } catch (e) {
+        console.log('[bbdc] initHighlight (frame) error:', e);
+      }
+      ctx.onInvalidated(() => cleanupHighlight?.());
+      return;
+    }
+
     // === 1. CSS Injection ===
     const style = document.createElement('style');
     style.textContent = `

@@ -134,38 +134,72 @@ function clearAll(): void {
 
 // === 防抖应用 ===
 function applyHighlight(): void {
+  if (!document.body) return;
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     highlightNode(document.body);
-  }, 300);
+  }, 120);
 }
 
-// === MutationObserver ===
+function scheduleHighlight(root: Node): void {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    highlightNode(root);
+  }, 80);
+}
+
+function waitForBody(): Promise<HTMLElement> {
+  if (document.body) return Promise.resolve(document.body);
+  return new Promise((resolve) => {
+    const obs = new MutationObserver(() => {
+      if (document.body) {
+        obs.disconnect();
+        resolve(document.body);
+      }
+    });
+    obs.observe(document.documentElement, { childList: true });
+  });
+}
+
+// === MutationObserver（含字幕 textContent / 文本节点更新） ===
 function setupObserver(): void {
   if (observer) observer.disconnect();
+  if (!document.body) return;
   observer = new MutationObserver((mutations) => {
     if (isHighlighting) return;
-    let hasNew = false;
     for (const mut of mutations) {
+      if (mut.type === 'characterData') {
+        const parent = (mut.target as Text).parentElement;
+        if (parent && !parent.dataset?.langeasyHighlight) {
+          scheduleHighlight(parent);
+        }
+        continue;
+      }
       for (const node of mut.addedNodes) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           const el = node as HTMLElement;
           if (!el.dataset?.langeasyHighlight) {
-            hasNew = true;
             highlightNode(node);
+          }
+        } else if (node.nodeType === Node.TEXT_NODE) {
+          const parent = node.parentElement;
+          if (parent && !parent.dataset?.langeasyHighlight) {
+            scheduleHighlight(parent);
           }
         }
       }
     }
-    if (!hasNew && mutations.length > 5) {
-      applyHighlight();
-    }
   });
-  observer.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
 }
 
 // === 初始化（在 content script 中调用） ===
 export async function initHighlight(): Promise<() => void> {
+  await waitForBody();
   const [words, raw] = await Promise.all([
     wordbookWordsItem.getValue(),
     highlightSettingsItem.getValue(),
