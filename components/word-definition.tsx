@@ -1,4 +1,3 @@
-import * as React from "react";
 import { AudioButton } from "./audio-button";
 
 export interface WordDefinitionProps {

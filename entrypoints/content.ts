@@ -161,12 +161,54 @@ export default defineContentScript({
       iframeEl.contentWindow.postMessage(pendingLookup, '*');
     }
 
-    function createIframe(word: string, data: WordLookupResponse | null, pX: number, pY: number) {
-      const innerW = window.innerWidth;
-      const innerH = window.innerHeight;
-      let left = 0;
-      let top = 0;
+    const POPUP_WIDTH = 320;
+    const POPUP_MARGIN = 8;
+    const POPUP_ESTIMATE_H = 180;
 
+    /** 将弹窗矩形限制在视口内，避免贴边时溢出屏幕 */
+    function clampPopupBox(left: number, top: number, width: number, height: number) {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const w = Math.min(Math.max(1, width), Math.max(1, vw - POPUP_MARGIN * 2));
+      const h = Math.min(Math.max(1, height), Math.max(1, vh - POPUP_MARGIN * 2));
+      const maxLeft = Math.max(POPUP_MARGIN, vw - w - POPUP_MARGIN);
+      const maxTop = Math.max(POPUP_MARGIN, vh - h - POPUP_MARGIN);
+      return {
+        left: Math.min(Math.max(left, POPUP_MARGIN), maxLeft),
+        top: Math.min(Math.max(top, POPUP_MARGIN), maxTop),
+      };
+    }
+
+    /** 优先锚点右下；空间不足则翻到左侧/上方，最后再 clamp */
+    function placePopupNear(pX: number, pY: number, width: number, height: number) {
+      let left = pX;
+      let top = pY + 10;
+      if (left + width + POPUP_MARGIN > window.innerWidth) {
+        left = pX - width - 12;
+      }
+      if (top + height + POPUP_MARGIN > window.innerHeight) {
+        top = pY - height - 10;
+      }
+      return clampPopupBox(left, top, width, height);
+    }
+
+    function applyPopupPosition(el: HTMLElement, left: number, top: number) {
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+    }
+
+    /** 内容高度变化后重新贴边，保证始终落在视口内 */
+    function repositionCurrentPopup() {
+      const wrapper = currentWrapper ?? document.getElementById('yddWrapper');
+      if (!wrapper) return;
+      const rect = wrapper.getBoundingClientRect();
+      const width = Math.max(rect.width || POPUP_WIDTH, 1);
+      const height = Math.max(rect.height || POPUP_ESTIMATE_H, 1);
+      const { left, top } = clampPopupBox(rect.left, rect.top, width, height);
+      applyPopupPosition(wrapper, left, top);
+    }
+
+    function createIframe(word: string, data: WordLookupResponse | null, pX: number, pY: number) {
       const wrapper = document.createElement('div');
       const iframeSrc = browser.runtime.getURL('/lookup.html');
       const iframe = document.createElement('iframe');
@@ -177,7 +219,7 @@ export default defineContentScript({
         'border: none',
         'display: block',
         'background: transparent',
-        'width: 320px',
+        `width: ${POPUP_WIDTH}px`,
         'max-width: min(400px, 90vw)',
         'height: 0',
         'overflow: hidden',
@@ -189,16 +231,8 @@ export default defineContentScript({
       wrapper.style.zIndex = '2147483647';
       wrapper.style.overflow = 'visible';
 
-      // pX/pY 为 viewport（client）坐标
-      left = pX + 300 < innerW ? pX : pX - 300 - 20;
-      wrapper.style.left = left + 'px';
-      if (left + 300 > innerW) {
-        left -= (left + 300 - innerW);
-        wrapper.style.left = left + 'px';
-      }
-
-      top = pY + 150 + 20 < innerH ? pY : pY - 150 - 20;
-      wrapper.style.top = (top + 10) + 'px';
+      const placed = placePopupNear(pX, pY, POPUP_WIDTH, POPUP_ESTIMATE_H);
+      applyPopupPosition(wrapper, placed.left, placed.top);
 
       wrapper.onmouseover = () => { mouseOverPopup = true; };
       wrapper.onmouseout = () => { mouseOverPopup = false; };
@@ -213,16 +247,11 @@ export default defineContentScript({
 
       wrapperArray.push(wrapper);
 
-      const wrapperEl = document.getElementById('yddWrapper');
-      if (wrapperEl && top + 10 + wrapperEl.clientHeight < pY) {
-        wrapper.style.top = (pY - wrapperEl.clientHeight) + 'px';
-      }
-
       if (currentWrapper &&
           currentWrapper.style.top === wrapper.style.top &&
           currentWrapper.style.left === wrapper.style.left) {
         pendingLookup = null;
-        document.body.removeChild(wrapper);
+        wrapper.parentNode?.removeChild(wrapper);
         wrapperArray.pop();
       } else {
         last_time = Math.round(Date.now());
@@ -276,15 +305,14 @@ export default defineContentScript({
     function createMiniIcon(text: string, pX: number, pY: number) {
       removeMiniIcon();
       const rect = window.getSelection()!.getRangeAt(0).getBoundingClientRect();
-      const innerW = window.innerWidth;
+      const iconSize = 36;
+      const margin = 5;
       let left = window.scrollX + rect.right + 5;
       let top = window.scrollY + rect.top - 30;
-      if (left + 24 > window.scrollX + innerW) {
-        left = window.scrollX + innerW - 30;
-      }
-      if (top < window.scrollY + 5) {
-        top = window.scrollY + 5;
-      }
+      const maxLeft = window.scrollX + window.innerWidth - iconSize - margin;
+      const maxTop = window.scrollY + window.innerHeight - iconSize - margin;
+      left = Math.min(Math.max(window.scrollX + margin, left), Math.max(window.scrollX + margin, maxLeft));
+      top = Math.min(Math.max(window.scrollY + margin, top), Math.max(window.scrollY + margin, maxTop));
 
       const icon = document.createElement('div');
       icon.id = 'langeasyMiniIcon';
@@ -417,37 +445,63 @@ export default defineContentScript({
       // mousemove (capture=true) - Ctrl+hover word lookup
       ctx.addEventListener(document, 'mousemove', async (e: MouseEvent) => {
         if (getOption('ctrl_only') && e.ctrlKey) {
-          const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-          if (range) {
-            const startOffset = range.startOffset;
-            let endOffset = range.endOffset;
+          // 优先标准 caretPositionFromPoint，回退非标准 caretRangeFromPoint
+          const doc = document as Document & {
+            caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+            caretRangeFromPoint?: (x: number, y: number) => Range | null;
+          };
+          let startContainer: Node | null = null;
+          let startOffset = 0;
+          let endContainer: Node | null = null;
+          let endOffset = 0;
 
-            if (lastStartContainer !== range.startContainer || lastStartOffset !== startOffset) {
-              lastStartContainer = range.startContainer;
+          if (typeof doc.caretPositionFromPoint === 'function') {
+            const pos = doc.caretPositionFromPoint(e.clientX, e.clientY);
+            if (pos?.offsetNode) {
+              startContainer = pos.offsetNode;
+              startOffset = pos.offset;
+              endContainer = pos.offsetNode;
+              endOffset = pos.offset;
+            }
+          } else if (typeof doc.caretRangeFromPoint === 'function') {
+            const range = doc.caretRangeFromPoint(e.clientX, e.clientY);
+            if (range) {
+              startContainer = range.startContainer;
+              startOffset = range.startOffset;
+              endContainer = range.endContainer;
+              endOffset = range.endOffset;
+            }
+          }
+
+          if (startContainer && endContainer) {
+            if (lastStartContainer !== startContainer || lastStartOffset !== startOffset) {
+              lastStartContainer = startContainer;
               lastStartOffset = startOffset;
-              const expandedRange = range.cloneRange();
+              const expandedRange = document.createRange();
+              expandedRange.setStart(startContainer, startOffset);
+              expandedRange.setEnd(endContainer, endOffset);
               let text = '';
 
-              const startData = (range.startContainer as CharacterData).data;
+              const startData = (startContainer as CharacterData).data;
               if (startData) {
                 let so = startOffset;
                 while (so >= 1) {
-                  expandedRange.setStart(range.startContainer, --so);
+                  expandedRange.setStart(startContainer, --so);
                   text = expandedRange.toString();
                   if (!isEnglishChar(text.charAt(0))) {
-                    expandedRange.setStart(range.startContainer, so + 1);
+                    expandedRange.setStart(startContainer, so + 1);
                     break;
                   }
                 }
               }
 
-              const endData = (range.endContainer as CharacterData).data;
+              const endData = (endContainer as CharacterData).data;
               if (endData) {
-                while (endOffset < (range.endContainer as CharacterData).data.length) {
-                  expandedRange.setEnd(range.endContainer, ++endOffset);
+                while (endOffset < (endContainer as CharacterData).data.length) {
+                  expandedRange.setEnd(endContainer, ++endOffset);
                   text = expandedRange.toString();
                   if (!isEnglishChar(text.charAt(text.length - 1))) {
-                    expandedRange.setEnd(range.endContainer, endOffset - 1);
+                    expandedRange.setEnd(endContainer, endOffset - 1);
                     break;
                   }
                 }
@@ -672,6 +726,8 @@ export default defineContentScript({
           iframe.style.height = h + 'px';
           iframe.style.overflow = data.height > maxH ? 'auto' : 'hidden';
           iframe.setAttribute('scrolling', data.height > maxH ? 'yes' : 'no');
+          // 高度变化后重新限制在视口内，避免贴底/贴顶溢出
+          repositionCurrentPopup();
         }
       }
     });

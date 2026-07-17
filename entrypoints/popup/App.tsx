@@ -126,7 +126,7 @@ export default function App() {
           className="mr-2 rounded"
           alt="logo"
         />
-        <a href="https://bbdc.cn" target="_blank" className="text-[12px] text-accent font-medium">
+        <a href="https://bbdc.cn/index?source=https://irez.cn" target="_blank" className="text-[12px] text-accent font-medium">
           不背单词
         </a>
         <div className="ml-auto text-[11px]">
