@@ -10,7 +10,15 @@ import {
 } from '@/lib/text-utils';
 import type { WordLookupResponse, LookupMessage, ResizeMessage, LookupReadyMessage } from '@/lib/types';
 import { initHighlight } from '@/lib/highlight';
-import { isExtContextValid, safeSendMessage, safeGetURL, safeExtCall } from '@/lib/ext-context';
+import {
+  isExtContextValid,
+  isScriptAlive,
+  safeSendMessage,
+  safeGetURL,
+  safeExtCall,
+  safeSetTimeout,
+  safeWatchStorage,
+} from '@/lib/ext-context';
 
 function getSystemTheme(): 'dark' | 'light' {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -47,7 +55,7 @@ export default defineContentScript({
   allFrames: true,
   async main(ctx) {
     const isTopFrame = window === window.top;
-    if (ctx.isInvalid) return;
+    if (!isScriptAlive(ctx)) return;
 
     // === 1. CSS Injection ===
     const isVideoFrame =
@@ -200,17 +208,27 @@ export default defineContentScript({
       };
     }
 
+    /** fixed 定位必须用 viewport 坐标；兼容误传入的 pageX/pageY */
+    function toViewportAnchor(x: number, y: number) {
+      if (y > window.innerHeight || x > window.innerWidth) {
+        return { x: x - window.scrollX, y: y - window.scrollY };
+      }
+      return { x, y };
+    }
+
     /** 优先锚点右下；空间不足则翻到左侧/上方，最后再 clamp */
     function placePopupNear(pX: number, pY: number, width: number, height: number) {
-      let left = pX;
-      let top = pY + 10;
+      const anchor = toViewportAnchor(pX, pY);
+      let left = anchor.x;
+      let top = anchor.y + 10;
       if (left + width + POPUP_MARGIN > window.innerWidth) {
-        left = pX - width - 12;
+        left = anchor.x - width - 12;
       }
       if (top + height + POPUP_MARGIN > window.innerHeight) {
-        top = pY - height - 10;
+        top = anchor.y - height - 10;
       }
-      return clampPopupBox(left, top, width, height);
+      const placed = clampPopupBox(left, top, width, height);
+      return placed;
     }
 
     function applyPopupPosition(el: HTMLElement, left: number, top: number) {
@@ -302,11 +320,11 @@ export default defineContentScript({
     }
 
     async function queryWord(word: string, pX: number, pY: number) {
-      if (!isExtContextValid() || ctx.isInvalid) return;
+      if (!isScriptAlive(ctx)) return;
       removeMiniIcon();
       try {
         const response = await fetchWord(word);
-        if (!isExtContextValid() || ctx.isInvalid) return;
+        if (!isScriptAlive(ctx)) return;
         if (response) {
           handleResponse(word, response, pX, pY);
         }
@@ -319,7 +337,7 @@ export default defineContentScript({
       const icon = document.getElementById('langeasyMiniIcon');
       if (icon) {
         icon.style.display = 'none';
-        ctx.setTimeout(() => {
+        safeSetTimeout(ctx, () => {
           if (icon.parentNode) {
             icon.parentNode.removeChild(icon);
           }
@@ -327,9 +345,12 @@ export default defineContentScript({
       }
     }
 
-    function createMiniIcon(text: string, pX: number, pY: number) {
+    function createMiniIcon(text: string) {
       removeMiniIcon();
       const rect = window.getSelection()!.getRangeAt(0).getBoundingClientRect();
+      // fixed 弹窗锚点：选区视口坐标（勿用 pageX/pageY）
+      const anchorX = rect.left + Math.min(rect.width, 40);
+      const anchorY = rect.bottom;
       const iconSize = 36;
       const margin = 5;
       let left = window.scrollX + rect.right + 5;
@@ -351,8 +372,8 @@ export default defineContentScript({
         e.preventDefault();
         e.stopPropagation();
         icon.style.display = 'none';
-        queryWord(text, pX, pY);
-        ctx.setTimeout(() => removeMiniIcon(), 0);
+        queryWord(text, anchorX, anchorY);
+        safeSetTimeout(ctx, () => removeMiniIcon(), 0);
       });
       document.body.appendChild(icon);
     }
@@ -385,7 +406,7 @@ export default defineContentScript({
       if (lemma === lastHoverLemma && currentWrapper) return;
 
       if (hoverOpenTimer !== undefined) clearTimeout(hoverOpenTimer);
-      hoverOpenTimer = ctx.setTimeout(() => {
+      hoverOpenTimer = safeSetTimeout(ctx, () => {
         hoverOpenTimer = undefined;
         lastHoverLemma = lemma;
         const rect = hl.getBoundingClientRect();
@@ -465,7 +486,7 @@ export default defineContentScript({
       }
 
       if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
-      hoverCloseTimer = ctx.setTimeout(() => {
+      hoverCloseTimer = safeSetTimeout(ctx, () => {
         hoverCloseTimer = undefined;
         if (!mouseOverPopup) {
           lastHoverLemma = null;
@@ -545,7 +566,7 @@ export default defineContentScript({
               if (lastSelectedText !== selectedText) {
                 lastSelectedText = selectedText;
                 if (selectedText.length >= 1) {
-                  ctx.setTimeout(() => {
+                  safeSetTimeout(ctx, () => {
                     const sel = window.getSelection();
                     if (sel) {
                       sel.removeAllRanges();
@@ -575,6 +596,12 @@ export default defineContentScript({
       // mouseup - selection translation (core)
       ctx.addEventListener(document, 'mouseup', async (e: MouseEvent) => {
         if (mouseOverPopup) return;
+
+        const upTarget = e.target as Element | null;
+        // 点击悬浮球时不要再走划词逻辑（选区仍在，会再次 createMiniIcon）
+        if (upTarget && typeof upTarget.closest === 'function' && upTarget.closest('#langeasyMiniIcon')) {
+          return;
+        }
 
         if (currentWrapper) {
           if (Math.round(Date.now()) - last_time < 500) return;
@@ -616,7 +643,7 @@ export default defineContentScript({
           pageX = e.pageX; pageY = e.pageY; screenX = e.screenX; screenY = e.screenY;
 
           if (getOption('mini_mode')) {
-            createMiniIcon(text, e.pageX, e.pageY);
+            createMiniIcon(text);
           } else {
             queryWord(text, e.clientX, e.clientY);
           }
@@ -694,7 +721,7 @@ export default defineContentScript({
       // 视频帧弹窗：忽略 iframe mouseout 关闭请求
       if (popupFromVideoFrame) return;
       if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
-      hoverCloseTimer = ctx.setTimeout(() => {
+      hoverCloseTimer = safeSetTimeout(ctx, () => {
         hoverCloseTimer = undefined;
         if (!mouseOverPopup) {
           lastHoverLemma = null;
@@ -707,7 +734,7 @@ export default defineContentScript({
     if (isTopFrame) {
       try {
         browser.runtime.onMessage.addListener((message: unknown) => {
-          if (!isExtContextValid() || ctx.isInvalid) return;
+          if (!isScriptAlive(ctx)) return;
           const msg = message as {
             type?: string;
             word?: string;
@@ -775,7 +802,7 @@ export default defineContentScript({
     // === 6. 异步加载设置（不阻塞事件监听器） ===
     let cleanupHighlight: (() => void) | null = null;
     (async () => {
-      if (ctx.isInvalid || !isExtContextValid()) return;
+      if (!isScriptAlive(ctx)) return;
       // 仅顶层强制同步，避免每个视频 iframe 重复打 API
       if (isTopFrame) {
         safeSendMessage({ type: 'sync-wordbook', force: true });
@@ -788,7 +815,7 @@ export default defineContentScript({
       } catch (e) {
         console.log('[bbdc] initSettings error:', e);
       }
-      if (ctx.isInvalid || !isExtContextValid()) return;
+      if (!isScriptAlive(ctx)) return;
       // 初始化生词高亮（顶层 + Bunny 字幕 iframe）
       try {
         cleanupHighlight = await initHighlight();
@@ -797,26 +824,26 @@ export default defineContentScript({
       }
     })().catch(() => {});
 
-    // Watch for setting changes
-    const unwatchGetWord = isGetWordItem.watch((v) => {
-      if (!isExtContextValid() || ctx.isInvalid) return;
+    // Watch for setting changes（勿用 ctx.isInvalid：失效时会抛 Extension context invalidated）
+    const unwatchGetWord = safeWatchStorage(isGetWordItem, (v) => {
+      if (!isScriptAlive(ctx)) return;
       isGetWord = v;
     });
-    const unwatchCtrl = isCtrlItem.watch((v) => {
-      if (!isExtContextValid() || ctx.isInvalid) return;
+    const unwatchCtrl = safeWatchStorage(isCtrlItem, (v) => {
+      if (!isScriptAlive(ctx)) return;
       isCtrl = v;
     });
-    const unwatchMiniMode = isMiniModeItem.watch((v) => {
-      if (!isExtContextValid() || ctx.isInvalid) return;
+    const unwatchMiniMode = safeWatchStorage(isMiniModeItem, (v) => {
+      if (!isScriptAlive(ctx)) return;
       isMiniMode = v;
     });
-    const unwatchTheme = themeItem.watch((mode) => {
-      if (!isExtContextValid() || ctx.isInvalid) return;
+    const unwatchTheme = safeWatchStorage(themeItem, (mode) => {
+      if (!isScriptAlive(ctx)) return;
       applyMiniTheme(mode);
     });
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const onSystemThemeChange = () => {
-      if (!isExtContextValid() || ctx.isInvalid) return;
+      if (!isScriptAlive(ctx)) return;
       void safeExtCall(() => themeItem.getValue(), 'system').then((mode) => {
         if (mode === 'system') applyMiniTheme(mode);
       });

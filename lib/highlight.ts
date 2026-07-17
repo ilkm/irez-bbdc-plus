@@ -7,7 +7,7 @@ import {
   type HighlightSettings,
 } from './storage';
 import { WORD_RE, findHighlightRanges } from './word-match';
-import { isExtContextValid, safeExtCall } from './ext-context';
+import { isExtContextValid, safeExtCall, safeWatchStorage } from './ext-context';
 
 // === 内部状态 ===
 let observer: MutationObserver | null = null;
@@ -406,7 +406,7 @@ export async function initHighlight(): Promise<() => void> {
     setupObserver();
   }
 
-  const unwatchWords = wordbookWordsItem.watch((w) => {
+  const unwatchWords = safeWatchStorage(wordbookWordsItem, (w) => {
     if (!highlightAlive || !isExtContextValid()) return;
     wordSet = new Set(w.map((word) => word.toLowerCase()));
     scheduleWordbookRepaint();
@@ -437,7 +437,7 @@ export async function initHighlight(): Promise<() => void> {
     runtimeListener = null;
   }
 
-  const unwatchSettings = highlightSettingsItem.watch((newSettings) => {
+  const unwatchSettings = safeWatchStorage(highlightSettingsItem, (newSettings) => {
     if (!highlightAlive || !isExtContextValid()) return;
     settings = normalizeHighlightSettings(newSettings);
     clearTimeout(updateTimer);
