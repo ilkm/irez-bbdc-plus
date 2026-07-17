@@ -20,9 +20,25 @@ function resolveTheme(mode: ThemeMode): 'dark' | 'light' {
   return mode === 'system' ? getSystemTheme() : mode;
 }
 
-/** 悬浮球边框色：跟随扩展主题 accent */
-function miniBorderColor(mode: ThemeMode): string {
-  return resolveTheme(mode) === 'dark' ? '#5ab0ff' : '#4a9eff';
+/** 悬浮球玻璃样式变量：亮色透明渐变，暗色近黑 */
+function applyMiniTheme(mode: ThemeMode) {
+  const dark = resolveTheme(mode) === 'dark';
+  const root = document.documentElement;
+  if (dark) {
+    root.style.setProperty('--langeasy-mini-fill', 'rgba(12, 12, 16, 0.88)');
+    root.style.setProperty(
+      '--langeasy-mini-border-image',
+      'linear-gradient(145deg, rgba(55, 55, 65, 0.95), rgba(0, 0, 0, 0.92) 45%, rgba(30, 30, 38, 0.9))',
+    );
+    root.style.setProperty('--langeasy-mini-shadow', '0 2px 14px rgba(0, 0, 0, 0.55)');
+  } else {
+    root.style.setProperty('--langeasy-mini-fill', 'rgba(255, 255, 255, 0.28)');
+    root.style.setProperty(
+      '--langeasy-mini-border-image',
+      'linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(180, 210, 255, 0.45) 40%, rgba(255, 255, 255, 0.55))',
+    );
+    root.style.setProperty('--langeasy-mini-shadow', '0 2px 14px rgba(80, 120, 180, 0.18)');
+  }
 }
 
 export default defineContentScript({
@@ -58,13 +74,19 @@ export default defineContentScript({
         position: absolute;
         z-index: 999999;
         box-sizing: border-box;
-        background: transparent;
-        border: 1px solid var(--langeasy-mini-border, #5ab0ff);
-        border-radius: 50%;
         width: 36px;
         height: 36px;
         padding: 0;
-        box-shadow: none;
+        border: 1.5px solid transparent;
+        border-radius: 50%;
+        background:
+          linear-gradient(var(--langeasy-mini-fill, rgba(255,255,255,0.28)), var(--langeasy-mini-fill, rgba(255,255,255,0.28))) padding-box,
+          var(--langeasy-mini-border-image, linear-gradient(145deg, rgba(255,255,255,0.95), rgba(180,210,255,0.45), rgba(255,255,255,0.55))) border-box;
+        background-origin: border-box;
+        background-clip: padding-box, border-box;
+        -webkit-backdrop-filter: blur(10px) saturate(1.2);
+        backdrop-filter: blur(10px) saturate(1.2);
+        box-shadow: var(--langeasy-mini-shadow, 0 2px 14px rgba(80, 120, 180, 0.18));
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -74,7 +96,8 @@ export default defineContentScript({
         overflow: hidden;
       }
       .langeasy-mini-icon:hover {
-        opacity: 0.9;
+        opacity: 0.95;
+        transform: scale(1.04);
       }
       .langeasy-mini-icon img {
         width: 100%;
@@ -102,10 +125,6 @@ export default defineContentScript({
       }
     `;
     document.head.appendChild(style);
-
-    function applyMiniTheme(mode: ThemeMode) {
-      document.documentElement.style.setProperty('--langeasy-mini-border', miniBorderColor(mode));
-    }
 
     // === 2. State Variables ===
     let mouseOverPopup = false;
@@ -566,7 +585,8 @@ export default defineContentScript({
           currentWrapper = null;
         }
 
-        if (getOption('dict_disable')) return;
+        // 划词翻译关闭时，仅图标模式仍可出悬浮球
+        if (getOption('dict_disable') && !getOption('mini_mode')) return;
         if (!(getOption('ctrl_only') || !e.ctrlKey)) return;
 
         let text = String(window.getSelection()).trim();
@@ -809,6 +829,9 @@ export default defineContentScript({
       try { unwatchMiniMode(); } catch { /* ignore */ }
       try { unwatchTheme(); } catch { /* ignore */ }
       mediaQuery.removeEventListener('change', onSystemThemeChange);
+      document.documentElement.style.removeProperty('--langeasy-mini-fill');
+      document.documentElement.style.removeProperty('--langeasy-mini-border-image');
+      document.documentElement.style.removeProperty('--langeasy-mini-shadow');
       document.documentElement.style.removeProperty('--langeasy-mini-border');
       if (hoverOpenTimer !== undefined) clearTimeout(hoverOpenTimer);
       if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);

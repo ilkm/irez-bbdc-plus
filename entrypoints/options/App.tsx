@@ -371,7 +371,7 @@ export default function App() {
         <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover-bg transition-colors cursor-pointer">
           <Checkbox id="langeasyIsMiniMode" checked={isMiniMode}
             onCheckedChange={(v) => { setIsMiniMode(v); isMiniModeItem.setValue(v); }} />
-          <Label htmlFor="langeasyIsMiniMode">图标模式（划词后默认显示图标按钮）</Label>
+          <Label htmlFor="langeasyIsMiniMode">图标模式（划词后显示悬浮图标，可单独开启）</Label>
         </div>
       </div>
 
