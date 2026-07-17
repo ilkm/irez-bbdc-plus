@@ -28,24 +28,28 @@ function resolveTheme(mode: ThemeMode): 'dark' | 'light' {
   return mode === 'system' ? getSystemTheme() : mode;
 }
 
-/** 悬浮球玻璃样式变量：亮色透明渐变，暗色近黑 */
+/** 悬浮球玻璃样式：与全局 glass token 对齐（简便黑 / 透明玻璃） */
 function applyMiniTheme(mode: ThemeMode) {
   const dark = resolveTheme(mode) === 'dark';
   const root = document.documentElement;
   if (dark) {
-    root.style.setProperty('--langeasy-mini-fill', 'rgba(12, 12, 16, 0.88)');
+    root.style.setProperty('--langeasy-mini-fill', 'rgba(18, 18, 18, 0.88)');
     root.style.setProperty(
       '--langeasy-mini-border-image',
-      'linear-gradient(145deg, rgba(55, 55, 65, 0.95), rgba(0, 0, 0, 0.92) 45%, rgba(30, 30, 38, 0.9))',
+      'linear-gradient(145deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.06) 45%, rgba(255, 255, 255, 0.12))',
     );
-    root.style.setProperty('--langeasy-mini-shadow', '0 2px 14px rgba(0, 0, 0, 0.55)');
+    root.style.setProperty('--langeasy-mini-shadow', '0 4px 16px rgba(0, 0, 0, 0.55)');
+    root.style.setProperty('--langeasy-mini-blur', '20px');
+    root.style.setProperty('--langeasy-mini-saturate', '1.6');
   } else {
-    root.style.setProperty('--langeasy-mini-fill', 'rgba(255, 255, 255, 0.28)');
+    root.style.setProperty('--langeasy-mini-fill', 'rgba(255, 255, 255, 0.88)');
     root.style.setProperty(
       '--langeasy-mini-border-image',
       'linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(180, 210, 255, 0.45) 40%, rgba(255, 255, 255, 0.55))',
     );
-    root.style.setProperty('--langeasy-mini-shadow', '0 2px 14px rgba(80, 120, 180, 0.18)');
+    root.style.setProperty('--langeasy-mini-shadow', '0 4px 16px rgba(80, 120, 180, 0.18)');
+    root.style.setProperty('--langeasy-mini-blur', '20px');
+    root.style.setProperty('--langeasy-mini-saturate', '1.6');
   }
 }
 
@@ -88,13 +92,13 @@ export default defineContentScript({
         border: 1.5px solid transparent;
         border-radius: 50%;
         background:
-          linear-gradient(var(--langeasy-mini-fill, rgba(255,255,255,0.28)), var(--langeasy-mini-fill, rgba(255,255,255,0.28))) padding-box,
+          linear-gradient(var(--langeasy-mini-fill, rgba(255,255,255,0.88)), var(--langeasy-mini-fill, rgba(255,255,255,0.88))) padding-box,
           var(--langeasy-mini-border-image, linear-gradient(145deg, rgba(255,255,255,0.95), rgba(180,210,255,0.45), rgba(255,255,255,0.55))) border-box;
         background-origin: border-box;
         background-clip: padding-box, border-box;
-        -webkit-backdrop-filter: blur(10px) saturate(1.2);
-        backdrop-filter: blur(10px) saturate(1.2);
-        box-shadow: var(--langeasy-mini-shadow, 0 2px 14px rgba(80, 120, 180, 0.18));
+        -webkit-backdrop-filter: blur(var(--langeasy-mini-blur, 20px)) saturate(var(--langeasy-mini-saturate, 1.6));
+        backdrop-filter: blur(var(--langeasy-mini-blur, 20px)) saturate(var(--langeasy-mini-saturate, 1.6));
+        box-shadow: var(--langeasy-mini-shadow, 0 4px 16px rgba(80, 120, 180, 0.18));
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -859,6 +863,8 @@ export default defineContentScript({
       document.documentElement.style.removeProperty('--langeasy-mini-fill');
       document.documentElement.style.removeProperty('--langeasy-mini-border-image');
       document.documentElement.style.removeProperty('--langeasy-mini-shadow');
+      document.documentElement.style.removeProperty('--langeasy-mini-blur');
+      document.documentElement.style.removeProperty('--langeasy-mini-saturate');
       document.documentElement.style.removeProperty('--langeasy-mini-border');
       if (hoverOpenTimer !== undefined) clearTimeout(hoverOpenTimer);
       if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);

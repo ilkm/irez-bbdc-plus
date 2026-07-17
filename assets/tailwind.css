@@ -3,22 +3,42 @@
 /* === Theme CSS Variables === */
 :root,
 [data-theme="dark"] {
-  --c-primary: #e8e8ed;
-  --c-secondary: #a0a0a8;
+  --c-primary: #e8e8e8;
+  --c-secondary: #8e8e8e;
   --c-accent: #5ab0ff;
   --c-accent-hover: #7ac0ff;
   --c-accent-rgb: 90, 176, 255;
   --c-success: #5eead4;
   --c-error: #ff6b6b;
-  --c-surface: rgba(15, 15, 22, 0.92);
-  --c-titlebar: rgba(255, 255, 255, 0.03);
-  --c-hover: rgba(255, 255, 255, 0.05);
+
+  /* 简便黑：左上浅 → 右下深 */
+  --c-bg: #2a2a2a;
+  --c-bg-mid: #141414;
+  --c-bg-end: #000000;
+  --c-shadow: rgba(0, 0, 0, 0.28);
+  /* 弹窗外阴影：近处轻贴合 + 远处柔和环境光，避免单层重黑晕 */
+  --c-elevated-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.18),
+    0 6px 16px rgba(0, 0, 0, 0.22),
+    0 18px 40px rgba(0, 0, 0, 0.16);
+  --c-card-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.14),
+    0 4px 12px rgba(0, 0, 0, 0.18);
+
+  /* 统一透明玻璃（仅若隐若现） */
+  --c-glass-blur: 20px;
+  --c-glass-saturate: 160%;
+  --c-glass-bg: rgba(18, 18, 18, 0.88);
+  --c-glass-bg-strong: rgba(12, 12, 12, 0.92);
+  --c-glass-border: rgba(255, 255, 255, 0.12);
+  --c-glass-highlight: rgba(255, 255, 255, 0.06);
+
+  --c-surface: var(--c-glass-bg-strong);
+  --c-titlebar: rgba(255, 255, 255, 0.04);
+  --c-hover: rgba(255, 255, 255, 0.06);
   --c-line: rgba(255, 255, 255, 0.1);
-  --c-bg: #0a0a0f;
-  --c-bg-end: #111118;
-  --c-shadow: rgba(0, 0, 0, 0.4);
-  --c-input-bg: rgba(255, 255, 255, 0.05);
-  --c-input-border: rgba(255, 255, 255, 0.1);
+  --c-input-bg: rgba(255, 255, 255, 0.06);
+  --c-input-border: rgba(255, 255, 255, 0.12);
 }
 
 [data-theme="light"] {
@@ -29,13 +49,31 @@
   --c-accent-rgb: 74, 158, 255;
   --c-success: #0d9488;
   --c-error: #e53e3e;
-  --c-surface: rgba(255, 255, 255, 0.95);
+
+  --c-bg: #f5f6f8;
+  --c-bg-mid: #fafbfc;
+  --c-bg-end: #ffffff;
+  --c-shadow: rgba(0, 0, 0, 0.08);
+  --c-elevated-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 6px 16px rgba(0, 0, 0, 0.07),
+    0 18px 40px rgba(0, 0, 0, 0.06);
+  --c-card-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.03),
+    0 4px 12px rgba(0, 0, 0, 0.06);
+
+  /* 统一透明玻璃（亮色，仅若隐若现） */
+  --c-glass-blur: 20px;
+  --c-glass-saturate: 160%;
+  --c-glass-bg: rgba(255, 255, 255, 0.88);
+  --c-glass-bg-strong: rgba(255, 255, 255, 0.94);
+  --c-glass-border: rgba(255, 255, 255, 0.55);
+  --c-glass-highlight: rgba(255, 255, 255, 0.65);
+
+  --c-surface: var(--c-glass-bg-strong);
   --c-titlebar: rgba(0, 0, 0, 0.02);
   --c-hover: rgba(0, 0, 0, 0.04);
   --c-line: rgba(0, 0, 0, 0.08);
-  --c-bg: #f5f6f8;
-  --c-bg-end: #ffffff;
-  --c-shadow: rgba(0, 0, 0, 0.12);
   --c-input-bg: rgba(0, 0, 0, 0.03);
   --c-input-border: rgba(0, 0, 0, 0.1);
 }
@@ -86,27 +124,47 @@
 
 /* === Utility Classes === */
 @layer utilities {
-  .glass-card-solid {
-    background: var(--c-surface);
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid transparent;
+  /* 统一玻璃基底：模糊 / 饱和 / 描边高光一致，仅透明度分级 */
+  .glass-base {
+    backdrop-filter: blur(var(--c-glass-blur)) saturate(var(--c-glass-saturate));
+    -webkit-backdrop-filter: blur(var(--c-glass-blur)) saturate(var(--c-glass-saturate));
+    border: 1px solid var(--c-glass-border);
     box-shadow:
-      0 8px 32px var(--c-shadow),
-      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      var(--c-elevated-shadow),
+      inset 0 1px 0 var(--c-glass-highlight);
+  }
+
+  .glass-card-solid {
+    background: var(--c-glass-bg-strong);
+    backdrop-filter: blur(var(--c-glass-blur)) saturate(var(--c-glass-saturate));
+    -webkit-backdrop-filter: blur(var(--c-glass-blur)) saturate(var(--c-glass-saturate));
+    border: 1px solid var(--c-glass-border);
+    box-shadow:
+      var(--c-elevated-shadow),
+      inset 0 1px 0 var(--c-glass-highlight);
   }
 
   .glass-card {
-    background: var(--c-hover);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid transparent;
+    background: var(--c-glass-bg);
+    backdrop-filter: blur(var(--c-glass-blur)) saturate(var(--c-glass-saturate));
+    -webkit-backdrop-filter: blur(var(--c-glass-blur)) saturate(var(--c-glass-saturate));
+    border: 1px solid var(--c-glass-border);
     box-shadow:
-      0 4px 16px var(--c-shadow),
-      inset 0 1px 0 rgba(255, 255, 255, 0.03);
+      var(--c-card-shadow),
+      inset 0 1px 0 var(--c-glass-highlight);
   }
 
+  /* 黑白渐变：左上浅 → 右下深 */
   .app-gradient-bg {
+    background: linear-gradient(
+      135deg,
+      var(--c-bg) 0%,
+      var(--c-bg-mid) 48%,
+      var(--c-bg-end) 100%
+    );
+  }
+
+  [data-theme="light"] .app-gradient-bg {
     background:
       radial-gradient(ellipse at top left, rgba(var(--c-accent-rgb), 0.08) 0%, transparent 50%),
       radial-gradient(ellipse at bottom right, rgba(94, 234, 212, 0.04) 0%, transparent 50%),
