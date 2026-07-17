@@ -10,6 +10,7 @@ import {
 } from '@/lib/text-utils';
 import type { WordLookupResponse, LookupMessage, ResizeMessage, LookupReadyMessage } from '@/lib/types';
 import { initHighlight } from '@/lib/highlight';
+import { isExtContextValid, safeSendMessage, safeGetURL, safeExtCall } from '@/lib/ext-context';
 
 function getSystemTheme(): 'dark' | 'light' {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -30,6 +31,7 @@ export default defineContentScript({
   allFrames: true,
   async main(ctx) {
     const isTopFrame = window === window.top;
+    if (ctx.isInvalid) return;
 
     // === 1. CSS Injection ===
     const isVideoFrame =
@@ -209,8 +211,10 @@ export default defineContentScript({
     }
 
     function createIframe(word: string, data: WordLookupResponse | null, pX: number, pY: number) {
+      if (!isExtContextValid()) return;
       const wrapper = document.createElement('div');
-      const iframeSrc = browser.runtime.getURL('/lookup.html');
+      const iframeSrc = safeGetURL('/lookup.html');
+      if (!iframeSrc) return;
       const iframe = document.createElement('iframe');
       iframe.setAttribute('src', iframeSrc);
       iframe.id = 'langeasyLexisIframe';
@@ -279,9 +283,11 @@ export default defineContentScript({
     }
 
     async function queryWord(word: string, pX: number, pY: number) {
+      if (!isExtContextValid() || ctx.isInvalid) return;
       removeMiniIcon();
       try {
         const response = await fetchWord(word);
+        if (!isExtContextValid() || ctx.isInvalid) return;
         if (response) {
           handleResponse(word, response, pX, pY);
         }
@@ -317,7 +323,8 @@ export default defineContentScript({
       const icon = document.createElement('div');
       icon.id = 'langeasyMiniIcon';
       icon.className = 'langeasy-mini-icon';
-      const imgSrc = browser.runtime.getURL('/images/icon_128.png');
+      const imgSrc = safeGetURL('/images/icon_128.png');
+      if (!imgSrc) return;
       icon.innerHTML = `<img src="${imgSrc}" alt="翻译">`;
       icon.style.left = left + 'px';
       icon.style.top = top + 'px';
@@ -365,38 +372,46 @@ export default defineContentScript({
         const rect = hl.getBoundingClientRect();
         // 视频跨域 iframe：经 background 转到顶层打开弹窗（postMessage 不可靠）
         if (isVideoFrame && !isTopFrame) {
-          browser.runtime
-            .sendMessage({
-              type: 'langeasy-frame-lookup',
-              word: lemma,
-              frameUrl: location.href,
-              rect: {
-                left: rect.left,
-                top: rect.top,
-                right: rect.right,
-                bottom: rect.bottom,
-              },
-            })
-            .catch((err) => {
-              console.log('[bbdc] frame lookup relay failed:', err);
+          const payload = {
+            type: 'langeasy-lookup-from-frame' as const,
+            word: lemma,
+            rect: {
+              left: rect.left,
+              top: rect.top,
+              right: rect.right,
+              bottom: rect.bottom,
+            },
+          };
+          if (isExtContextValid()) {
+            try {
+              void browser.runtime
+                .sendMessage({
+                  type: 'langeasy-frame-lookup',
+                  word: lemma,
+                  frameUrl: location.href,
+                  rect: payload.rect,
+                })
+                .catch(() => {
+                  try {
+                    window.top?.postMessage(payload, '*');
+                  } catch {
+                    /* ignore */
+                  }
+                });
+            } catch {
               try {
-                window.top?.postMessage(
-                  {
-                    type: 'langeasy-lookup-from-frame',
-                    word: lemma,
-                    rect: {
-                      left: rect.left,
-                      top: rect.top,
-                      right: rect.right,
-                      bottom: rect.bottom,
-                    },
-                  },
-                  '*',
-                );
+                window.top?.postMessage(payload, '*');
               } catch {
                 /* ignore */
               }
-            });
+            }
+          } else {
+            try {
+              window.top?.postMessage(payload, '*');
+            } catch {
+              /* ignore */
+            }
+          }
           return;
         }
         queryWord(lemma, rect.left, rect.bottom + 4);
@@ -577,7 +592,7 @@ export default defineContentScript({
         if (text) {
           cleanWrappers();
           // 存入选中单词，供 popup 自动查询
-          lastSelectedWordItem.setValue(text);
+          lastSelectedWordItem.setValue(text).catch(() => {});
           pageX = e.pageX; pageY = e.pageY; screenX = e.screenX; screenY = e.screenY;
 
           if (getOption('mini_mode')) {
@@ -670,21 +685,26 @@ export default defineContentScript({
 
     // 顶层：接收 background 转发的视频帧查词（跨域 postMessage 不可靠时的主路径）
     if (isTopFrame) {
-      browser.runtime.onMessage.addListener((message: unknown) => {
-        const msg = message as {
-          type?: string;
-          word?: string;
-          frameUrl?: string;
-          rect?: { left: number; top: number; right: number; bottom: number };
-        } | undefined;
-        if (msg?.type === 'langeasy-frame-lookup' && msg.word && msg.rect) {
-          openLookupFromVideoFrame(msg.word, msg.rect, msg.frameUrl);
-          return;
-        }
-        if (msg?.type === 'langeasy-frame-lookup-close') {
-          scheduleCloseFromVideoFrame();
-        }
-      });
+      try {
+        browser.runtime.onMessage.addListener((message: unknown) => {
+          if (!isExtContextValid() || ctx.isInvalid) return;
+          const msg = message as {
+            type?: string;
+            word?: string;
+            frameUrl?: string;
+            rect?: { left: number; top: number; right: number; bottom: number };
+          } | undefined;
+          if (msg?.type === 'langeasy-frame-lookup' && msg.word && msg.rect) {
+            openLookupFromVideoFrame(msg.word, msg.rect, msg.frameUrl);
+            return;
+          }
+          if (msg?.type === 'langeasy-frame-lookup-close') {
+            scheduleCloseFromVideoFrame();
+          }
+        });
+      } catch {
+        /* Extension context invalidated */
+      }
     }
 
     // message - lookup iframe handshake + 视频帧转发查词到顶层
@@ -735,49 +755,68 @@ export default defineContentScript({
     // === 6. 异步加载设置（不阻塞事件监听器） ===
     let cleanupHighlight: (() => void) | null = null;
     (async () => {
+      if (ctx.isInvalid || !isExtContextValid()) return;
       // 仅顶层强制同步，避免每个视频 iframe 重复打 API
       if (isTopFrame) {
-        browser.runtime.sendMessage({ type: 'sync-wordbook', force: true }).catch(() => {});
+        safeSendMessage({ type: 'sync-wordbook', force: true });
       }
       try {
-        isGetWord = await isGetWordItem.getValue();
-        isCtrl = await isCtrlItem.getValue();
-        isMiniMode = await isMiniModeItem.getValue();
-        applyMiniTheme(await themeItem.getValue());
+        isGetWord = await safeExtCall(() => isGetWordItem.getValue(), true);
+        isCtrl = await safeExtCall(() => isCtrlItem.getValue(), true);
+        isMiniMode = await safeExtCall(() => isMiniModeItem.getValue(), false);
+        applyMiniTheme(await safeExtCall(() => themeItem.getValue(), 'system'));
       } catch (e) {
         console.log('[bbdc] initSettings error:', e);
       }
+      if (ctx.isInvalid || !isExtContextValid()) return;
       // 初始化生词高亮（顶层 + Bunny 字幕 iframe）
       try {
         cleanupHighlight = await initHighlight();
       } catch (e) {
         console.log('[bbdc] initHighlight error:', e);
       }
-    })();
+    })().catch(() => {});
 
     // Watch for setting changes
-    const unwatchGetWord = isGetWordItem.watch((v) => { isGetWord = v; });
-    const unwatchCtrl = isCtrlItem.watch((v) => { isCtrl = v; });
-    const unwatchMiniMode = isMiniModeItem.watch((v) => { isMiniMode = v; });
-    const unwatchTheme = themeItem.watch((mode) => { applyMiniTheme(mode); });
+    const unwatchGetWord = isGetWordItem.watch((v) => {
+      if (!isExtContextValid() || ctx.isInvalid) return;
+      isGetWord = v;
+    });
+    const unwatchCtrl = isCtrlItem.watch((v) => {
+      if (!isExtContextValid() || ctx.isInvalid) return;
+      isCtrl = v;
+    });
+    const unwatchMiniMode = isMiniModeItem.watch((v) => {
+      if (!isExtContextValid() || ctx.isInvalid) return;
+      isMiniMode = v;
+    });
+    const unwatchTheme = themeItem.watch((mode) => {
+      if (!isExtContextValid() || ctx.isInvalid) return;
+      applyMiniTheme(mode);
+    });
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const onSystemThemeChange = () => {
-      themeItem.getValue().then((mode) => {
+      if (!isExtContextValid() || ctx.isInvalid) return;
+      void safeExtCall(() => themeItem.getValue(), 'system').then((mode) => {
         if (mode === 'system') applyMiniTheme(mode);
       });
     };
     mediaQuery.addEventListener('change', onSystemThemeChange);
 
     ctx.onInvalidated(() => {
-      unwatchGetWord();
-      unwatchCtrl();
-      unwatchMiniMode();
-      unwatchTheme();
+      try { unwatchGetWord(); } catch { /* ignore */ }
+      try { unwatchCtrl(); } catch { /* ignore */ }
+      try { unwatchMiniMode(); } catch { /* ignore */ }
+      try { unwatchTheme(); } catch { /* ignore */ }
       mediaQuery.removeEventListener('change', onSystemThemeChange);
       document.documentElement.style.removeProperty('--langeasy-mini-border');
       if (hoverOpenTimer !== undefined) clearTimeout(hoverOpenTimer);
       if (hoverCloseTimer !== undefined) clearTimeout(hoverCloseTimer);
-      if (cleanupHighlight) cleanupHighlight();
+      if (cleanupHighlight) {
+        try { cleanupHighlight(); } catch { /* ignore */ }
+        cleanupHighlight = null;
+      }
+      cleanWrappers();
     });
   },
 });

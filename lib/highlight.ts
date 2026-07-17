@@ -7,6 +7,7 @@ import {
   type HighlightSettings,
 } from './storage';
 import { WORD_RE, findHighlightRanges } from './word-match';
+import { isExtContextValid, safeExtCall } from './ext-context';
 
 // === 内部状态 ===
 let observer: MutationObserver | null = null;
@@ -17,6 +18,8 @@ let updateTimer: ReturnType<typeof setTimeout> | undefined;
 let isHighlighting = false; // 防止 MutationObserver 级联
 let storageListener: ((changes: Record<string, { newValue?: unknown; oldValue?: unknown }>, area: string) => void) | null = null;
 let runtimeListener: ((message: unknown) => void) | null = null;
+/** 扩展重载后置 false，停止一切异步/观察逻辑 */
+let highlightAlive = true;
 
 // 需要跳过的标签
 const SKIP_TAGS = new Set([
@@ -161,6 +164,7 @@ function pushHighlightSpan(frags: Node[], text: string, lemma: string): void {
 
 // === DOM 扫描与高亮 ===
 function highlightNode(root: Node): void {
+  if (!highlightAlive || !isExtContextValid()) return;
   if (!settings || !settings.enabled || wordSet.size === 0) return;
 
   isHighlighting = true;
@@ -231,22 +235,30 @@ function clearAll(): void {
 }
 
 async function refreshWordSetFromStorage(): Promise<void> {
-  const words = await wordbookWordsItem.getValue();
+  if (!highlightAlive || !isExtContextValid()) return;
+  const words = await safeExtCall(() => wordbookWordsItem.getValue(), []);
   wordSet = new Set(words.map((w) => w.toLowerCase()));
 }
 
 function scheduleWordbookRepaint(): void {
+  if (!highlightAlive || !isExtContextValid()) return;
   clearTimeout(updateTimer);
   updateTimer = setTimeout(() => {
     void (async () => {
-      await refreshWordSetFromStorage();
-      clearAll();
-      if (settings?.enabled && wordSet.size > 0) {
-        applyHighlight();
-        if (!observer) setupObserver();
-      } else if (observer) {
-        observer.disconnect();
-        observer = null;
+      if (!highlightAlive || !isExtContextValid()) return;
+      try {
+        await refreshWordSetFromStorage();
+        if (!highlightAlive) return;
+        clearAll();
+        if (settings?.enabled && wordSet.size > 0) {
+          applyHighlight();
+          if (!observer) setupObserver();
+        } else if (observer) {
+          observer.disconnect();
+          observer = null;
+        }
+      } catch {
+        /* Extension context invalidated */
       }
     })();
   }, 500);
@@ -254,18 +266,23 @@ function scheduleWordbookRepaint(): void {
 
 // === 防抖应用：每次扫描前重读 storage，避免 watch 漏事件导致 wordSet 过期 ===
 function applyHighlight(): void {
-  if (!document.body) return;
+  if (!highlightAlive || !isExtContextValid() || !document.body) return;
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     void (async () => {
-      await refreshWordSetFromStorage();
-      if (!settings?.enabled || wordSet.size === 0) return;
-      if (isVideoCaptionHost()) {
-        for (const root of getVideoHighlightRoots()) {
-          highlightNode(root);
+      if (!highlightAlive || !isExtContextValid()) return;
+      try {
+        await refreshWordSetFromStorage();
+        if (!highlightAlive || !settings?.enabled || wordSet.size === 0) return;
+        if (isVideoCaptionHost()) {
+          for (const root of getVideoHighlightRoots()) {
+            highlightNode(root);
+          }
+        } else {
+          highlightNode(document.body);
         }
-      } else {
-        highlightNode(document.body);
+      } catch {
+        /* Extension context invalidated */
       }
     })();
   }, 300);
@@ -290,7 +307,7 @@ function waitForBody(): Promise<HTMLElement> {
  */
 function setupStableObserver(): void {
   observer = new MutationObserver((mutations) => {
-    if (isHighlighting) return;
+    if (!highlightAlive || isHighlighting || !isExtContextValid()) return;
     let hasNew = false;
     for (const mut of mutations) {
       for (const node of mut.addedNodes) {
@@ -316,7 +333,7 @@ function setupStableObserver(): void {
  */
 function setupCaptionFrameObserver(): void {
   observer = new MutationObserver((mutations) => {
-    if (isHighlighting) return;
+    if (!highlightAlive || isHighlighting || !isExtContextValid()) return;
     const roots = new Set<Node>();
     for (const mut of mutations) {
       if (mut.type === 'characterData') {
@@ -341,6 +358,7 @@ function setupCaptionFrameObserver(): void {
     if (roots.size === 0) return;
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
+      if (!highlightAlive || !isExtContextValid()) return;
       if (!settings?.enabled || wordSet.size === 0) return;
       for (const root of roots) {
         highlightNode(root);
@@ -366,13 +384,22 @@ function setupObserver(): void {
 
 // === 初始化（在 content script 中调用） ===
 export async function initHighlight(): Promise<() => void> {
+  highlightAlive = true;
   await waitForBody();
+  if (!isExtContextValid()) {
+    return () => {};
+  }
+
   const [words, raw] = await Promise.all([
-    wordbookWordsItem.getValue(),
-    highlightSettingsItem.getValue(),
+    safeExtCall(() => wordbookWordsItem.getValue(), []),
+    safeExtCall(() => highlightSettingsItem.getValue(), null),
   ]);
+  if (!highlightAlive || !isExtContextValid()) {
+    return () => {};
+  }
+
   wordSet = new Set(words.map((w) => w.toLowerCase()));
-  settings = normalizeHighlightSettings(raw);
+  settings = normalizeHighlightSettings(raw ?? undefined);
 
   if (settings.enabled && wordSet.size > 0) {
     applyHighlight();
@@ -380,29 +407,42 @@ export async function initHighlight(): Promise<() => void> {
   }
 
   const unwatchWords = wordbookWordsItem.watch((w) => {
+    if (!highlightAlive || !isExtContextValid()) return;
     wordSet = new Set(w.map((word) => word.toLowerCase()));
     scheduleWordbookRepaint();
   });
 
   // 兜底：部分环境下 item.watch 会漏掉 background/其他页的写入
   storageListener = (changes, area) => {
+    if (!highlightAlive || !isExtContextValid()) return;
     if (area !== 'local' || !changes.langeasyWordbookWords) return;
     scheduleWordbookRepaint();
   };
-  browser.storage.onChanged.addListener(storageListener);
+  try {
+    browser.storage.onChanged.addListener(storageListener);
+  } catch {
+    storageListener = null;
+  }
 
   runtimeListener = (message: unknown) => {
+    if (!highlightAlive || !isExtContextValid()) return;
     const msg = message as { type?: string } | undefined;
     if (msg?.type === 'wordbook-local-updated') {
       scheduleWordbookRepaint();
     }
   };
-  browser.runtime.onMessage.addListener(runtimeListener);
+  try {
+    browser.runtime.onMessage.addListener(runtimeListener);
+  } catch {
+    runtimeListener = null;
+  }
 
   const unwatchSettings = highlightSettingsItem.watch((newSettings) => {
+    if (!highlightAlive || !isExtContextValid()) return;
     settings = normalizeHighlightSettings(newSettings);
     clearTimeout(updateTimer);
     updateTimer = setTimeout(() => {
+      if (!highlightAlive || !isExtContextValid()) return;
       clearAll();
       if (settings?.enabled && wordSet.size > 0) {
         applyHighlight();
@@ -415,14 +455,23 @@ export async function initHighlight(): Promise<() => void> {
   });
 
   return () => {
-    unwatchWords();
-    unwatchSettings();
+    highlightAlive = false;
+    try {
+      unwatchWords();
+    } catch { /* ignore */ }
+    try {
+      unwatchSettings();
+    } catch { /* ignore */ }
     if (storageListener) {
-      browser.storage.onChanged.removeListener(storageListener);
+      try {
+        browser.storage.onChanged.removeListener(storageListener);
+      } catch { /* ignore */ }
       storageListener = null;
     }
     if (runtimeListener) {
-      browser.runtime.onMessage.removeListener(runtimeListener);
+      try {
+        browser.runtime.onMessage.removeListener(runtimeListener);
+      } catch { /* ignore */ }
       runtimeListener = null;
     }
     clearTimeout(updateTimer);

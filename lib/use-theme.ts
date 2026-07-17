@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { themeItem, type ThemeMode } from './storage';
+import { isExtContextValid, safeExtCall } from './ext-context';
 
 type ResolvedTheme = 'dark' | 'light';
 
@@ -30,38 +31,49 @@ export function useTheme() {
   const [resolvedTheme, setResolvedTheme] = React.useState<ResolvedTheme>('dark');
 
   React.useEffect(() => {
+    let cancelled = false;
     // 读取存储
-    (async () => {
-      const t = await themeItem.getValue();
+    void (async () => {
+      const t = await safeExtCall(() => themeItem.getValue(), 'system');
+      if (cancelled) return;
       setThemeState(t);
       applyTheme(t);
       setResolvedTheme(resolveTheme(t));
     })();
 
     // 监听存储变化（跨页面同步）
-    const unwatch = themeItem.watch((t) => {
-      setThemeState(t);
-      applyTheme(t);
-      setResolvedTheme(resolveTheme(t));
-    });
+    let unwatch = () => {};
+    try {
+      unwatch = themeItem.watch((t) => {
+        if (!isExtContextValid()) return;
+        setThemeState(t);
+        applyTheme(t);
+        setResolvedTheme(resolveTheme(t));
+      });
+    } catch {
+      /* Extension context invalidated */
+    }
 
     // 监听系统主题变化（仅在 system 模式下生效）
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const onSystemChange = () => {
-      if (themeItem.getValue && typeof themeItem.getValue === 'function') {
-        // getValue 返回 Promise，在 system 模式下重新应用
-        themeItem.getValue().then((mode) => {
-          if (mode === 'system') {
-            applyTheme('system');
-            setResolvedTheme(getSystemTheme());
-          }
-        });
-      }
+      if (!isExtContextValid()) return;
+      void safeExtCall(() => themeItem.getValue(), 'system').then((mode) => {
+        if (mode === 'system') {
+          applyTheme('system');
+          setResolvedTheme(getSystemTheme());
+        }
+      });
     };
     mediaQuery.addEventListener('change', onSystemChange);
 
     return () => {
-      unwatch();
+      cancelled = true;
+      try {
+        unwatch();
+      } catch {
+        /* ignore */
+      }
       mediaQuery.removeEventListener('change', onSystemChange);
     };
   }, []);
@@ -70,7 +82,9 @@ export function useTheme() {
     setThemeState(mode);
     applyTheme(mode);
     setResolvedTheme(resolveTheme(mode));
-    themeItem.setValue(mode);
+    if (isExtContextValid()) {
+      void themeItem.setValue(mode).catch(() => {});
+    }
   }, []);
 
   return { theme, resolvedTheme, setTheme };
