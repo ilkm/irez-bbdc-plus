@@ -10,7 +10,7 @@ export default defineConfig({
   manifest: {
     name: '不背单词查词',
     description: '使用不背单词查词以及添加生字本功能，支持Chorme的选中划词翻译，有问题请找https://github.com/ilkm/irez-bbdc-plus/issues 反馈',
-    version: '1.0.0',
+    version: '1.0.1',
     permissions: ['storage', 'alarms'],
     host_permissions: [
       'https://langeasy.com.cn/*',
